@@ -1,0 +1,21 @@
+# systemd *user* unit — this is what makes Linux Link automatic:
+# the daemon starts at session login and restarts on a crash.
+#
+# Installation:
+#   mkdir -p ~/.config/systemd/user
+#   cp linkd.service ~/.config/systemd/user/
+#   systemctl --user daemon-reload
+#   systemctl --user enable --now linkd
+
+[Unit]
+Description=Linux Link daemon (Linux <-> Android continuity)
+After=network-online.target bluetooth.target
+
+[Service]
+ExecStart=%h/.local/bin/linkd run
+Restart=on-failure
+RestartSec=3
+Environment=RUST_LOG=info
+
+[Install]
+WantedBy=default.target

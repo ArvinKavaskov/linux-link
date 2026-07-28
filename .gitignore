@@ -1,0 +1,20 @@
+# Rust
+/linkd/target/
+target/
+**/*.rs.bk
+
+# Android / Gradle
+/android/.gradle/
+/android/build/
+/android/app/build/
+/android/captures/
+/android/local.properties
+/android/.idea/
+*.iml
+*.keystore
+*.jks
+
+# OS / editor
+.DS_Store
+*.swp
+*~

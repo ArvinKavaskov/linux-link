@@ -1,0 +1,165 @@
+<?xml version="1.0" encoding="utf-8"?>
+<manifest xmlns:android="http://schemas.android.com/apk/res/android"
+    xmlns:tools="http://schemas.android.com/tools">
+
+    <!-- Réseau -->
+    <uses-permission android:name="android.permission.INTERNET" />
+    <uses-permission android:name="android.permission.ACCESS_NETWORK_STATE" />
+    <uses-permission android:name="android.permission.ACCESS_WIFI_STATE" />
+
+    <!-- Bluetooth (découverte du PC via CDM ; pas besoin de localisation grâce au CDM) -->
+    <!-- Synchro Ne pas déranger (accès à la politique de notifications) -->
+    <uses-permission android:name="android.permission.ACCESS_NOTIFICATION_POLICY" />
+
+    <uses-permission android:name="android.permission.BLUETOOTH" android:maxSdkVersion="33" />
+    <uses-permission android:name="android.permission.BLUETOOTH_ADMIN" android:maxSdkVersion="33" />
+    <uses-permission android:name="android.permission.BLUETOOTH_CONNECT" />
+    <uses-permission android:name="android.permission.BLUETOOTH_SCAN"
+        android:usesPermissionFlags="neverForLocation"
+        tools:targetApi="s" />
+
+    <!-- Privilèges companion : c'est le cœur du "tout automatique" -->
+    <uses-permission android:name="android.permission.REQUEST_COMPANION_RUN_IN_BACKGROUND" />
+    <uses-permission android:name="android.permission.REQUEST_COMPANION_USE_DATA_IN_BACKGROUND" />
+    <uses-permission android:name="android.permission.REQUEST_COMPANION_START_FOREGROUND_SERVICES_FROM_BACKGROUND" />
+    <uses-permission android:name="android.permission.REQUEST_OBSERVE_COMPANION_DEVICE_PRESENCE" />
+
+    <!-- Service de premier plan pendant la connexion au PC -->
+    <uses-permission android:name="android.permission.FOREGROUND_SERVICE" />
+    <uses-permission android:name="android.permission.FOREGROUND_SERVICE_CONNECTED_DEVICE" />
+    <uses-permission android:name="android.permission.POST_NOTIFICATIONS" />
+
+    <!-- Scan du QR code d'appairage + mode webcam -->
+    <uses-permission android:name="android.permission.CAMERA" />
+    <!-- Mode micro : capture audio streamée au PC -->
+    <uses-permission android:name="android.permission.RECORD_AUDIO" />
+
+    <!-- Synchro de dossier : accès au dossier /LinuxLink (tous les fichiers) -->
+    <uses-permission android:name="android.permission.MANAGE_EXTERNAL_STORAGE"
+        tools:ignore="ScopedStorage" />
+
+    <!-- Presse-papiers automatique : fenêtre overlay invisible qui rend l'app
+         "visible" pour Android, seule condition pour lire le presse-papiers
+         en arrière-plan depuis Android 10 -->
+    <uses-permission android:name="android.permission.SYSTEM_ALERT_WINDOW" />
+    <!-- Plan B (accordé par câble USB si l'overlay ne suffit pas sur l'OEM) :
+         adb shell pm grant org.linuxlink.app android.permission.READ_LOGS -->
+    <uses-permission android:name="android.permission.READ_LOGS"
+        tools:ignore="ProtectedPermissions" />
+
+    <uses-feature android:name="android.hardware.bluetooth_le" android:required="false" />
+    <uses-feature android:name="android.hardware.camera" android:required="false" />
+    <uses-feature android:name="android.software.companion_device_setup" />
+
+    <application
+        android:label="Linux Link"
+        android:icon="@android:drawable/sym_def_app_icon"
+        android:theme="@android:style/Theme.Material.Light.NoActionBar"
+        android:allowBackup="true">
+
+        <activity
+            android:name=".MainActivity"
+            android:exported="true">
+            <intent-filter>
+                <action android:name="android.intent.action.MAIN" />
+                <category android:name="android.intent.category.LAUNCHER" />
+            </intent-filter>
+        </activity>
+
+        <!-- Réveillé PAR LE SYSTÈME quand le PC appairé apparaît à portée BLE.
+             C'est le mécanisme qui évite d'avoir à ouvrir l'app. -->
+        <service
+            android:name=".PcCompanionService"
+            android:exported="true"
+            android:permission="android.permission.BIND_COMPANION_DEVICE_SERVICE">
+            <intent-filter>
+                <action android:name="android.companion.CompanionDeviceService" />
+            </intent-filter>
+        </service>
+
+        <!-- Mode webcam : capture caméra streamée au PC -->
+        <activity
+            android:name=".WebcamActivity"
+            android:exported="false"
+            android:screenOrientation="landscape"
+            android:theme="@android:style/Theme.Material.Light.NoActionBar" />
+
+        <!-- Maintient la connexion QUIC tant que le PC est à portée -->
+        <service
+            android:name=".LinkForegroundService"
+            android:exported="false"
+            android:foregroundServiceType="connectedDevice" />
+
+        <!-- FileProvider : expose les images de presse-papiers reçues du PC
+             pour qu'elles soient collables dans les autres apps -->
+        <provider
+            android:name="androidx.core.content.FileProvider"
+            android:authorities="${applicationId}.fileprovider"
+            android:exported="false"
+            android:grantUriPermissions="true">
+            <meta-data
+                android:name="android.support.FILE_PROVIDER_PATHS"
+                android:resource="@xml/file_paths" />
+        </provider>
+
+        <!-- Shizuku : fournisseur requis par l'API Shizuku -->
+        <provider
+            android:name="rikka.shizuku.ShizukuProvider"
+            android:authorities="${applicationId}.shizuku"
+            android:multiprocess="false"
+            android:enabled="true"
+            android:exported="true"
+            android:permission="android.permission.INTERACT_ACROSS_USERS_FULL" />
+
+        <!-- Miroir de notifications : capte les notifications du téléphone
+             pour les relayer au PC (autorisation « Accès aux notifications ») -->
+        <service
+            android:name=".NotificationRelayService"
+            android:exported="false"
+            android:permission="android.permission.BIND_NOTIFICATION_LISTENER_SERVICE">
+            <intent-filter>
+                <action android:name="android.service.notification.NotificationListenerService" />
+            </intent-filter>
+        </service>
+
+        <!-- Presse-papiers : activité transparente qui prend le focus pour
+             avoir le droit de lire (restriction Android 10+), envoie, disparaît -->
+        <activity
+            android:name=".SendClipboardActivity"
+            android:exported="false"
+            android:theme="@android:style/Theme.Translucent.NoTitleBar"
+            android:excludeFromRecents="true"
+            android:noHistory="true" />
+
+        <!-- Tuile « Envoyer le presse-papiers » dans les réglages rapides -->
+        <service
+            android:name=".ClipboardTileService"
+            android:exported="true"
+            android:icon="@android:drawable/ic_menu_send"
+            android:label="Presse-papiers → PC"
+            android:permission="android.permission.BIND_QUICK_SETTINGS_TILE">
+            <intent-filter>
+                <action android:name="android.service.quicksettings.action.QS_TILE" />
+            </intent-filter>
+        </service>
+
+        <!-- « Partager → Linux Link » : envoie un texte au presse-papiers du PC -->
+        <activity
+            android:name=".ShareReceiverActivity"
+            android:exported="true"
+            android:label="Linux Link (presse-papiers PC)"
+            android:theme="@android:style/Theme.Translucent.NoTitleBar"
+            android:excludeFromRecents="true">
+            <!-- Un seul filtre « tous types » : texte (→ clipboard/handoff) et
+                 fichiers de tout type (photos, PDF, etc. → transfert). Certains
+                 OEM (Honor/MagicOS) ignorent le 2e filtre quand on en met deux.
+                 SEND_MULTIPLE = plusieurs fichiers à la fois. -->
+            <intent-filter>
+                <action android:name="android.intent.action.SEND" />
+                <action android:name="android.intent.action.SEND_MULTIPLE" />
+                <category android:name="android.intent.category.DEFAULT" />
+                <data android:mimeType="*/*" />
+            </intent-filter>
+        </activity>
+    </application>
+</manifest>

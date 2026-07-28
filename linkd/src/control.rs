@@ -1,0 +1,223 @@
+use crate::clipboard::ClipboardHub;
+use crate::files::PendingFiles;
+use crate::identity::Identity;
+use crate::lock::ProximityLock;
+use crate::pairing::Pairing;
+use crate::protocol::Message;
+use anyhow::{Context, Result};
+use std::path::PathBuf;
+use std::sync::Arc;
+use std::time::Duration;
+use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader};
+use tokio::net::{UnixListener, UnixStream};
+
+pub fn socket_path() -> PathBuf {
+    let base = std::env::var("XDG_RUNTIME_DIR")
+        .ok()
+        .map(PathBuf::from)
+        .unwrap_or_else(std::env::temp_dir);
+    base.join("linuxlink.sock")
+}
+
+pub fn serve(
+    hub: Arc<ClipboardHub>,
+    pending: Arc<PendingFiles>,
+    prox: Arc<ProximityLock>,
+    identity: Arc<Identity>,
+    port: u16,
+    pairing: Arc<Pairing>,
+) {
+    let path = socket_path();
+    let _ = std::fs::remove_file(&path);
+    let listener = match UnixListener::bind(&path) {
+        Ok(l) => l,
+        Err(e) => {
+            tracing::warn!("control socket unavailable ({e}) — local actions disabled");
+            return;
+        }
+    };
+    tracing::info!("Control socket: {}", path.display());
+    tokio::spawn(async move {
+        loop {
+            match listener.accept().await {
+                Ok((stream, _)) => {
+                    let hub = hub.clone();
+                    let pending = pending.clone();
+                    let prox = prox.clone();
+                    let identity = identity.clone();
+                    let pairing = pairing.clone();
+                    tokio::spawn(handle(stream, hub, pending, prox, identity, port, pairing));
+                }
+                Err(e) => {
+                    tracing::warn!("control socket accept: {e}");
+                    break;
+                }
+            }
+        }
+    });
+}
+
+async fn handle(
+    stream: UnixStream,
+    hub: Arc<ClipboardHub>,
+    pending: Arc<PendingFiles>,
+    prox: Arc<ProximityLock>,
+    identity: Arc<Identity>,
+    port: u16,
+    pairing: Arc<Pairing>,
+) {
+    let (rd, mut wr) = stream.into_split();
+    let mut lines = BufReader::new(rd).lines();
+    while let Ok(Some(line)) = lines.next_line().await {
+        let line = line.trim().to_string();
+
+        if line == "PAIR" {
+            handle_pair(&mut wr, &identity, port, &pairing).await;
+        } else if let Some(rest) = line.strip_prefix("OPEN ") {
+            let (url, title) = rest.split_once('\t').unwrap_or((rest, ""));
+            if url.is_empty() {
+                continue;
+            }
+            tracing::info!("↗ Handoff PC→phone: {url}");
+            hub.push(Message::OpenUrl { url: url.to_string(), title: title.to_string() })
+                .await;
+        } else if let Some(rest) = line.strip_prefix("PHONEVOL ") {
+            let (action, value) = rest.split_once(' ').unwrap_or((rest, "0"));
+            let value: i32 = value.trim().parse().unwrap_or(0);
+            tracing::info!("🔊 Phone volume: {action}");
+            hub.push(Message::PhoneVolume { action: action.to_string(), value }).await;
+        } else if let Some(rest) = line.strip_prefix("MEDIA ") {
+            let action = rest.trim();
+            tracing::info!("⏯ Phone media: {action}");
+            hub.push(Message::PhoneMedia { action: action.to_string() }).await;
+        } else if let Some(rest) = line.strip_prefix("SENDFILETO ") {
+            let (fp, path) = match rest.split_once('\t') {
+                Some(p) => p,
+                None => continue,
+            };
+            if path.is_empty() {
+                continue;
+            }
+            match pending.offer(PathBuf::from(path)).await {
+                Ok((id, name, size)) => {
+                    tracing::info!("📎 File offered to {}…: {name} ({size} bytes)", &fp[..fp.len().min(16)]);
+                    hub.push_to(fp, Message::FileOffer { id, name, size, clipboard: false }).await;
+                }
+                Err(e) => tracing::warn!("send-file (targeted): {e:#}"),
+            }
+        } else if let Some(rest) = line.strip_prefix("SENDFILE ") {
+            let path = PathBuf::from(rest.trim());
+            match pending.offer(path).await {
+                Ok((id, name, size)) => {
+                    tracing::info!("📎 File offered to phone(s): {name} ({size} bytes)");
+                    hub.push(Message::FileOffer { id, name, size, clipboard: false }).await;
+                }
+                Err(e) => tracing::warn!("send-file: {e:#}"),
+            }
+        } else if let Some(rest) = line.strip_prefix("LOCKMODE ") {
+            prox.set_enabled(rest.trim() == "on");
+        }
+    }
+}
+
+async fn handle_pair(
+    wr: &mut tokio::net::unix::OwnedWriteHalf,
+    identity: &Identity,
+    port: u16,
+    pairing: &Arc<Pairing>,
+) {
+    let token = crate::pairing::new_token();
+    let json = match crate::pairing::payload_json(identity, port, &token) {
+        Ok(j) => j,
+        Err(e) => {
+            let _ = wr.write_all(format!("ERR {e}\n").as_bytes()).await;
+            return;
+        }
+    };
+    let mut rx = pairing.subscribe();
+    pairing.begin(token).await;
+    tracing::info!("🔗 Pairing window opened (live)");
+    let _ = wr.write_all(format!("{json}\n").as_bytes()).await;
+    let _ = wr.flush().await;
+
+    let result = tokio::select! {
+        r = rx.recv() => r.ok(),
+        _ = tokio::time::sleep(Duration::from_secs(120)) => None,
+    };
+    pairing.end().await;
+    let reply = match result {
+        Some(name) => format!("PAIRED {name}\n"),
+        None => "TIMEOUT\n".to_string(),
+    };
+    let _ = wr.write_all(reply.as_bytes()).await;
+    let _ = wr.flush().await;
+}
+
+pub async fn send_url(url: &str, title: &str) -> Result<()> {
+    send_line(&format!("OPEN {url}\t{title}")).await
+}
+
+pub async fn phone_volume(action: &str, value: i32) -> Result<()> {
+    send_line(&format!("PHONEVOL {action} {value}")).await
+}
+
+pub async fn phone_media(action: &str) -> Result<()> {
+    send_line(&format!("MEDIA {action}")).await
+}
+
+pub async fn send_file(path: &str, to: Option<&str>) -> Result<()> {
+    match to {
+        Some(fp) => send_line(&format!("SENDFILETO {fp}\t{path}")).await,
+        None => send_line(&format!("SENDFILE {path}")).await,
+    }
+}
+
+pub async fn proximity_lock(on: bool) -> Result<()> {
+    send_line(&format!("LOCKMODE {}", if on { "on" } else { "off" })).await
+}
+
+pub async fn pair_live() -> Result<()> {
+    let path = socket_path();
+    let stream = UnixStream::connect(&path).await.map_err(|e| {
+        anyhow::anyhow!(
+            "daemon unreachable on {} ({e}). Is the linkd service running?",
+            path.display()
+        )
+    })?;
+    let (rd, mut wr) = stream.into_split();
+    wr.write_all(b"PAIR\n").await?;
+    wr.flush().await?;
+
+    let mut lines = BufReader::new(rd).lines();
+    let payload = lines
+        .next_line()
+        .await?
+        .context("no response from daemon")?;
+    if let Some(err) = payload.strip_prefix("ERR ") {
+        anyhow::bail!("{err}");
+    }
+    crate::pairing::print_qr_json(&payload)?;
+    println!("Waiting for scan… (2 minutes max). Keep this window open.\n");
+
+    match lines.next_line().await? {
+        Some(l) if l.starts_with("PAIRED ") => {
+            println!("✔ Device paired: {}", l.trim_start_matches("PAIRED ").trim());
+            println!("It is active immediately, without restarting anything.");
+        }
+        _ => println!("⏱ Time elapsed — run \"Pair a device…\" again if needed."),
+    }
+    Ok(())
+}
+
+async fn send_line(line: &str) -> Result<()> {
+    let path = socket_path();
+    let mut stream = UnixStream::connect(&path).await.map_err(|e| {
+        anyhow::anyhow!(
+            "daemon unreachable on {} ({e}). Is the linkd service running?",
+            path.display()
+        )
+    })?;
+    stream.write_all(format!("{line}\n").as_bytes()).await?;
+    stream.flush().await?;
+    Ok(())
+}

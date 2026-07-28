@@ -1,0 +1,12 @@
+[Desktop Entry]
+Type=Application
+Name=Send to phone (Linux Link)
+Comment=Opens the current page/URL on the paired phone
+# %u = URL passed by the browser; without an argument, the URL is read from the
+# clipboard. Usable as "open with" or via a keyboard shortcut.
+Exec=linkd send-url %u
+Icon=phone
+Terminal=false
+Categories=Network;
+MimeType=x-scheme-handler/http;x-scheme-handler/https;
+NoDisplay=false

@@ -1,0 +1,13 @@
+[Desktop Entry]
+Type=Application
+Name=Linux Link
+GenericName=Android Continuity
+Comment=System tray icon: connection, battery and quick actions to the phone
+# install.sh rewrites Exec with the absolute path. When manual, keep linux-link-gui
+# accessible in the PATH (~/.local/bin).
+Exec=linux-link-gui
+Icon=phone
+Terminal=false
+Categories=Network;Utility;
+StartupNotify=false
+X-GNOME-Autostart-enabled=true

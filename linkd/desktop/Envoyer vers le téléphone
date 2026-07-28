@@ -1,0 +1,35 @@
+#!/usr/bin/env bash
+# Script Nautilus « Envoyer vers le téléphone » (Linux Link).
+#
+# Installation :
+#   mkdir -p ~/.local/share/nautilus/scripts
+#   cp "Envoyer vers le téléphone" ~/.local/share/nautilus/scripts/
+#   chmod +x ~/.local/share/nautilus/scripts/"Envoyer vers le téléphone"
+# Puis dans Fichiers : clic droit sur un/des fichier(s) → Scripts →
+# « Envoyer vers le téléphone ».
+#
+# (Pour Nemo : ~/.local/share/nemo/scripts/ ; pour Dolphin, voir le README.)
+
+LINKD="$HOME/.local/bin/linkd"
+count=0
+fail=0
+
+# Nautilus fournit les chemins sélectionnés (un par ligne) dans cette variable.
+while IFS= read -r path; do
+    [ -z "$path" ] && continue
+    if [ -f "$path" ]; then
+        if "$LINKD" send-file "$path" >/dev/null 2>&1; then
+            count=$((count + 1))
+        else
+            fail=$((fail + 1))
+        fi
+    fi
+done <<< "$NAUTILUS_SCRIPT_SELECTED_FILE_PATHS"
+
+if command -v notify-send >/dev/null 2>&1; then
+    if [ "$fail" -eq 0 ]; then
+        notify-send "Linux Link" "$count fichier(s) envoyé(s) au téléphone 📎"
+    else
+        notify-send "Linux Link" "$count envoyé(s), $fail échec(s). Le téléphone est-il connecté ?"
+    fi
+fi
