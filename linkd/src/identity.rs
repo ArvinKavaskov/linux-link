@@ -107,4 +107,18 @@ impl TrustedPeers {
         }
         Ok(())
     }
+
+    /// Removes a device. Returns the name it had, if it was there at all.
+    ///
+    /// Accepts a fingerprint prefix so the settings window and the command line
+    /// can both work with the short form shown to the user.
+    pub fn forget(&mut self, fingerprint: &str) -> Result<Option<String>> {
+        let Some(pos) = self.peers.iter().position(|p| p.fingerprint.starts_with(fingerprint))
+        else {
+            return Ok(None);
+        };
+        let peer = self.peers.remove(pos);
+        self.save()?;
+        Ok(Some(peer.name))
+    }
 }

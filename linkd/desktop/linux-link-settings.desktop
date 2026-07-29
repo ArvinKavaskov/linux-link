@@ -1,0 +1,14 @@
+[Desktop Entry]
+Type=Application
+Name=Linux Link Settings
+GenericName=Android Continuity
+Comment=Paired devices, proximity lock, autostart and keyboard shortcuts
+# install.sh rewrites Exec with the absolute path. When installed by hand, keep
+# linux-link-settings reachable from PATH (~/.local/bin).
+Exec=linux-link-settings
+Icon=linux-link
+Terminal=false
+Categories=Settings;Network;Utility;
+StartupNotify=true
+StartupWMClass=linux-link
+Keywords=phone;android;link;sync;

@@ -71,12 +71,16 @@ impl ClipboardHub {
         let id = self.next_id.fetch_add(1, Ordering::Relaxed);
         self.subscribers.lock().await.push(Subscriber { id, fp, name: name.clone(), tx });
         tracing::info!("Push channel opened: {name} (subscriber #{id})");
+        // The status file and the proximity lock both depend on who is
+        // connected; wake them now instead of making them ask every 2 s.
+        crate::events::poke();
         (id, rx)
     }
 
     pub async fn unsubscribe(&self, id: u64) {
         self.subscribers.lock().await.retain(|s| s.id != id);
         tracing::info!("Push channel closed (subscriber #{id})");
+        crate::events::poke();
     }
 
     pub async fn subscriber_count(&self) -> usize {
@@ -119,8 +123,30 @@ impl ClipboardHub {
     }
 
     async fn watch(self: Arc<Self>) {
+        // Event-driven when the display server supports it (it nearly always
+        // does), polling only as a last resort. See `clipwatch`.
+        let mut ticks = crate::clipwatch::spawn(self.backend == Backend::Wayland);
+        if ticks.is_none() {
+            tracing::warn!(
+                "Clipboard: no change notification available, falling back to polling every {}s",
+                POLL_INTERVAL.as_secs()
+            );
+        }
         loop {
-            tokio::time::sleep(POLL_INTERVAL).await;
+            match ticks.as_mut() {
+                Some(rx) => {
+                    if rx.recv().await.is_none() {
+                        tracing::warn!("clipboard notifications stopped, back to polling");
+                        ticks = None;
+                        continue;
+                    }
+                    // The owner has changed but the new content is not
+                    // necessarily readable yet; one frame of grace avoids
+                    // reading the previous value back.
+                    tokio::time::sleep(std::time::Duration::from_millis(50)).await;
+                }
+                None => tokio::time::sleep(POLL_INTERVAL).await,
+            }
 
             if let Some(bytes) = self.get_clipboard_image().await {
                 let hash = hex::encode(Sha256::digest(&bytes));

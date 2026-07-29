@@ -3,9 +3,9 @@ use ksni::{Tray, TrayMethods};
 use serde::Deserialize;
 use std::path::PathBuf;
 use std::process::Command;
-use std::time::{Duration, SystemTime, UNIX_EPOCH};
+use std::time::Duration;
 
-#[derive(Deserialize, Clone, Default)]
+#[derive(Deserialize, Clone, Default, PartialEq)]
 struct DeviceStatus {
     #[serde(default)]
     name: String,
@@ -15,7 +15,7 @@ struct DeviceStatus {
     connected: bool,
 }
 
-#[derive(Deserialize, Clone)]
+#[derive(Deserialize, Clone, PartialEq)]
 struct Status {
     #[serde(default)]
     connected: bool,
@@ -31,8 +31,12 @@ struct Status {
     charging: bool,
     #[serde(default)]
     proximity: bool,
-    #[serde(default)]
-    updated: u64,
+    /// Not in the file: the daemon used to stamp `status.json` every two
+    /// seconds so we could treat a stale timestamp as "service stopped". That
+    /// heartbeat cost a disk write every two seconds forever, so it is gone —
+    /// we now ask the daemon directly by knocking on its control socket.
+    #[serde(skip)]
+    alive: bool,
 }
 
 fn neg_one() -> i32 {
@@ -49,18 +53,14 @@ impl Default for Status {
             battery: -1,
             charging: false,
             proximity: false,
-            updated: 0,
+            alive: false,
         }
     }
 }
 
 impl Status {
     fn daemon_alive(&self) -> bool {
-        let now = SystemTime::now()
-            .duration_since(UNIX_EPOCH)
-            .map(|d| d.as_secs())
-            .unwrap_or(0);
-        self.updated != 0 && now.saturating_sub(self.updated) < 8
+        self.alive
     }
 
     fn online(&self) -> bool {
@@ -75,11 +75,28 @@ fn status_path() -> PathBuf {
         .join("status.json")
 }
 
+fn socket_path() -> PathBuf {
+    std::env::var("XDG_RUNTIME_DIR")
+        .ok()
+        .map(PathBuf::from)
+        .unwrap_or_else(std::env::temp_dir)
+        .join("linuxlink.sock")
+}
+
+/// The daemon holds this socket open for as long as it lives, and the kernel
+/// refuses the connection the moment it dies — a truthful liveness check that
+/// costs nothing while idle.
+fn daemon_running() -> bool {
+    std::os::unix::net::UnixStream::connect(socket_path()).is_ok()
+}
+
 fn read_status() -> Status {
-    std::fs::read_to_string(status_path())
+    let mut status: Status = std::fs::read_to_string(status_path())
         .ok()
         .and_then(|s| serde_json::from_str(&s).ok())
-        .unwrap_or_default()
+        .unwrap_or_default();
+    status.alive = daemon_running();
+    status
 }
 
 struct LinkTray {
@@ -305,6 +322,16 @@ impl Tray for LinkTray {
             .into(),
         );
 
+        items.push(
+            StandardItem {
+                label: "Settings…".into(),
+                icon_name: "preferences-system".into(),
+                activate: Box::new(|_: &mut Self| open_settings()),
+                ..Default::default()
+            }
+            .into(),
+        );
+
         items.push(MenuItem::Separator);
 
         items.push(
@@ -321,55 +348,66 @@ impl Tray for LinkTray {
     }
 }
 
+fn logo_rgba() -> &'static Vec<u8> {
+    static LOGO: std::sync::OnceLock<Vec<u8>> = std::sync::OnceLock::new();
+    LOGO.get_or_init(|| {
+        image::load_from_memory(include_bytes!("../../assets/logo.png"))
+            .expect("embedded logo")
+            .resize_exact(32, 32, image::imageops::FilterType::Lanczos3)
+            .to_rgba8()
+            .into_raw()
+    })
+}
+
 fn make_icon(connected: bool) -> ksni::Icon {
-    const W: i32 = 24;
-    const H: i32 = 24;
-    let mut data = vec![0u8; (W * H * 4) as usize];
+    const S: i32 = 32;
+    let logo = logo_rgba();
+    let mut data = vec![0u8; (S * S * 4) as usize];
 
-    fn px(data: &mut [u8], x: i32, y: i32, a: u8, r: u8, g: u8, b: u8) {
-        if x < 0 || y < 0 || x >= 24 || y >= 24 {
-            return;
+    let corner = 8.0f32;
+    for y in 0..S {
+        for x in 0..S {
+            let i = ((y * S + x) * 4) as usize;
+            let (r, g, b, a) = (logo[i], logo[i + 1], logo[i + 2], logo[i + 3]);
+            let fx = x as f32 + 0.5;
+            let fy = y as f32 + 0.5;
+            let cx = fx.clamp(corner, S as f32 - corner);
+            let cy = fy.clamp(corner, S as f32 - corner);
+            let d = ((fx - cx).powi(2) + (fy - cy).powi(2)).sqrt();
+            data[i] = if d <= corner { a } else { 0 };
+            data[i + 1] = r;
+            data[i + 2] = g;
+            data[i + 3] = b;
         }
-        let i = ((y * 24 + x) * 4) as usize;
-        data[i] = a;
-        data[i + 1] = r;
-        data[i + 2] = g;
-        data[i + 3] = b;
     }
 
-    let (pr, pg, pb) = (124u8, 77u8, 255u8);
-    for y in 2..=21 {
-        for x in 6..=15 {
-            let corner = (x == 6 || x == 15) && (y == 2 || y == 21);
-            if corner {
-                continue;
-            }
-            px(&mut data, x, y, 255, pr, pg, pb);
-        }
-    }
-    for y in 4..=18 {
-        for x in 7..=14 {
-            px(&mut data, x, y, 255, 226, 220, 255);
-        }
-    }
     let (dr, dg, db) = if connected {
-        (52u8, 168u8, 83u8)
+        (76u8, 201u8, 110u8)
     } else {
         (150u8, 150u8, 150u8)
     };
-    let (cx, cy, rad) = (17i32, 18i32, 4i32);
-    for y in (cy - rad)..=(cy + rad) {
-        for x in (cx - rad)..=(cx + rad) {
-            let (dx, dy) = (x - cx, y - cy);
-            if dx * dx + dy * dy <= rad * rad {
-                px(&mut data, x, y, 255, dr, dg, db);
+    let (dx0, dy0) = (25.0f32, 25.0f32);
+    for y in 0..S {
+        for x in 0..S {
+            let d = ((x as f32 - dx0).powi(2) + (y as f32 - dy0).powi(2)).sqrt();
+            let i = ((y * S + x) * 4) as usize;
+            if d <= 4.5 {
+                data[i] = 255;
+                data[i + 1] = dr;
+                data[i + 2] = dg;
+                data[i + 3] = db;
+            } else if d <= 6.0 {
+                data[i] = 255;
+                data[i + 1] = 0x12;
+                data[i + 2] = 0x10;
+                data[i + 3] = 0x18;
             }
         }
     }
 
     ksni::Icon {
-        width: W,
-        height: H,
+        width: S,
+        height: S,
         data,
     }
 }
@@ -443,9 +481,39 @@ fn send_file_dialog(target_fp: Option<String>) {
     });
 }
 
+/// Opens the settings window, next to our own binary first — the tray app is
+/// normally launched by an absolute path from the autostart entry, so `$PATH`
+/// may not contain `~/.local/bin` at all.
+fn open_settings() {
+    std::thread::spawn(|| {
+        let sibling = std::env::current_exe()
+            .ok()
+            .and_then(|p| p.parent().map(|d| d.join("linux-link-settings")));
+        if let Some(path) = sibling {
+            if path.exists() && Command::new(&path).spawn().is_ok() {
+                return;
+            }
+        }
+        let beside_linkd = linkd_bin().with_file_name("linux-link-settings");
+        if beside_linkd.exists() && Command::new(&beside_linkd).spawn().is_ok() {
+            return;
+        }
+        if Command::new("linux-link-settings").spawn().is_err() {
+            notify("Linux Link", "Settings window not found — run install.sh again.");
+        }
+    });
+}
+
 fn pair_new_device() {
     std::thread::spawn(|| {
         let bin = linkd_bin();
+        let pair_gui = bin.with_file_name("linux-link-pair");
+        if Command::new(&pair_gui).spawn().is_ok() {
+            return;
+        }
+        if Command::new("linux-link-pair").spawn().is_ok() {
+            return;
+        }
         let script = format!(
             "'{}' pair-live; echo; read -p 'Press Enter to close…' _",
             bin.display()
@@ -476,28 +544,66 @@ fn pair_new_device() {
 
 #[tokio::main]
 async fn main() {
-    let handle = match (LinkTray {
-        status: read_status(),
-    })
-    .spawn()
-    .await
-    {
-        Ok(h) => h,
-        Err(e) => {
-            eprintln!(
-                "Cannot display the system tray icon: {e}\n\
-                 Your desktop must support StatusNotifierItem/AppIndicator.\n\
-                 On GNOME, install the \"AppIndicator support\" extension."
-            );
-            std::process::exit(1);
-        }
-    };
+    // At session login we are often started BEFORE the desktop's tray support
+    // is ready (on GNOME the AppIndicator extension loads a few seconds after
+    // autostart apps). So instead of giving up, keep retrying quietly: the
+    // icon then appears by itself as soon as the tray becomes available.
+    let mut attempts = 0u32;
+    'session: loop {
+        let handle = loop {
+            match (LinkTray {
+                status: read_status(),
+            })
+            .spawn()
+            .await
+            {
+                Ok(h) => break h,
+                Err(e) => {
+                    attempts += 1;
+                    if attempts == 1 {
+                        eprintln!("Tray not ready yet ({e}) — retrying…");
+                    }
+                    // ~10 minutes of patience, then a clear message.
+                    if attempts >= 200 {
+                        eprintln!(
+                            "Cannot display the system tray icon: {e}\n\
+                             Your desktop must support StatusNotifierItem/AppIndicator.\n\
+                             On GNOME, install the \"AppIndicator support\" extension."
+                        );
+                        std::process::exit(1);
+                    }
+                    tokio::time::sleep(Duration::from_secs(3)).await;
+                }
+            }
+        };
+        attempts = 0;
 
-    loop {
-        tokio::time::sleep(Duration::from_secs(2)).await;
-        let next = read_status();
-        if handle.update(|t: &mut LinkTray| t.status = next).await.is_none() {
-            break;
+        let mut shown = read_status();
+        loop {
+            tokio::time::sleep(Duration::from_secs(2)).await;
+
+            // The tray host (the shell or the bar) may have restarted while we
+            // were asleep. Checking the handle is free; it used to be inferred
+            // from a failed update, which meant issuing one every two seconds.
+            if handle.is_closed() {
+                eprintln!("Tray connection lost — reconnecting…");
+                tokio::time::sleep(Duration::from_secs(3)).await;
+                continue 'session;
+            }
+
+            // Reading a 300-byte file is nothing; redrawing the icon is a D-Bus
+            // round trip plus a repaint in the shell. Only do it when the state
+            // has actually moved.
+            let next = read_status();
+            if next == shown {
+                continue;
+            }
+            shown = next.clone();
+            if handle.update(|t: &mut LinkTray| t.status = next).await.is_none() {
+                eprintln!("Tray connection lost — reconnecting…");
+                tokio::time::sleep(Duration::from_secs(3)).await;
+                continue 'session;
+            }
         }
     }
 }

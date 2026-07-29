@@ -14,10 +14,12 @@ import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.SupervisorJob
 import kotlinx.coroutines.cancelChildren
+import kotlinx.coroutines.channels.Channel
 import kotlinx.coroutines.coroutineScope
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.isActive
 import kotlinx.coroutines.launch
+import kotlinx.coroutines.withTimeoutOrNull
 
 class LinkForegroundService : Service() {
 
@@ -28,7 +30,15 @@ class LinkForegroundService : Service() {
     private var mediaSession: LinkMediaSession? = null
     private var batteryReceiver: android.content.BroadcastReceiver? = null
     private var dndReceiver: android.content.BroadcastReceiver? = null
+    private var netMonitor: NetworkMonitor? = null
+    private var syncWatcher: SyncWatcher? = null
+    /** One tick whenever a watched folder changes; conflated on purpose. */
+    private val syncWakeups = Channel<Unit>(Channel.CONFLATED)
     @Volatile private var dndFromPc = false
+    /** True between a successful handshake and the connection dropping. */
+    @Volatile private var connected = false
+    /** The PC's BLE beacon is out of range — we are probably not home. */
+    @Volatile private var bleAway = false
 
     override fun onBind(intent: Intent?): IBinder? = null
 
@@ -38,6 +48,16 @@ class LinkForegroundService : Service() {
                 disconnect()
                 stopSelf()
             }
+            ACTION_BLE_GONE -> {
+                bleAway = true
+                if (connected) {
+                    Log.i(TAG, "out of BLE range but the Wi-Fi link is up — staying connected")
+                } else {
+                    Log.i(TAG, "out of BLE range and no link — standing down")
+                    disconnect()
+                    stopSelf()
+                }
+            }
             ACTION_MEDIA_PREV -> sendPcMedia("previous")
             ACTION_MEDIA_PLAYPAUSE -> sendPcMedia("play_pause")
             ACTION_MEDIA_NEXT -> sendPcMedia("next")
@@ -46,8 +66,10 @@ class LinkForegroundService : Service() {
                 if (!uris.isNullOrEmpty()) sendFilesToPc(uris)
             }
             else -> {
+                bleAway = false
                 startAsForeground("Connecting to the PC…")
                 connect()
+                netMonitor?.poke()
                 startAutoClipboardIfEnabled()
             }
         }
@@ -56,11 +78,12 @@ class LinkForegroundService : Service() {
 
     private fun connect() {
         if (connectionJob?.isActive == true) return
-        val pc = PairedPc.load(this) ?: run {
+        var pc = PairedPc.load(this) ?: run {
             Log.w(TAG, "No PC paired — nothing to do")
             stopSelf()
             return
         }
+        val monitor = netMonitor ?: NetworkMonitor(this).also { it.start(); netMonitor = it }
         connectionJob = scope.launch {
             val identity = Identity.loadOrCreate(this@LinkForegroundService)
             val c = LinkClient(identity).also { it.expectedFingerprint = pc.fingerprint }
@@ -69,34 +92,33 @@ class LinkForegroundService : Service() {
             var attempt = 0
             while (isActive) {
                 try {
-                    c.connect(pc.lastAddress, pc.port)
-                    val pcName = c.hello(Build.MODEL)
+                    val (address, pcName) = openConnection(c, pc)
+                    if (address != pc.lastAddress) {
+                        pc = pc.copy(lastAddress = address)
+                        PairedPc.save(this@LinkForegroundService, pc)
+                        Log.i(TAG, "PC address updated → $address")
+                    }
+                    connected = true
                     updateNotification("Connected to $pcName")
                     startMediaSession()
                     startBatteryReporting()
                     startDndSync()
                     attempt = 0
                     coroutineScope {
+                        // No more 15 s ping loop: the PC's QUIC keep-alive already
+                        // holds the NAT binding open and detects a dead link. We
+                        // only probe when something suggests we may have missed a
+                        // disconnection — screen on, Wi-Fi change.
                         launch {
                             var seq = 0L
                             while (isActive) {
-                                val rtt = c.ping(seq++)
-                                Log.d(TAG, "keepalive rtt=${rtt}ms")
-                                delay(15_000)
+                                monitor.wakeups.receive()
+                                val rtt = withTimeoutOrNull(4_000) { c.ping(seq++) }
+                                    ?: throw java.io.IOException("health check timed out")
+                                Log.d(TAG, "health check rtt=${rtt}ms")
                             }
                         }
-                        launch {
-                            while (isActive) {
-                                if (SyncFolder.isEnabled(this@LinkForegroundService) &&
-                                    SyncFolder.hasAllFilesAccess()) {
-                                    for (pair in SyncFolder.pairs()) {
-                                        try { c.runSync(pair.id, pair.dir) }
-                                        catch (e: Exception) { Log.w(TAG, "sync ${pair.id} : ${e.message}") }
-                                    }
-                                }
-                                delay(20_000)
-                            }
-                        }
+                        launch { syncLoop(c) }
                         launch {
                             c.subscribe { msg -> handlePush(msg) }
                         }
@@ -104,13 +126,106 @@ class LinkForegroundService : Service() {
                     }
                 } catch (e: Exception) {
                     Log.w(TAG, "connection lost: ${e.message}")
+                    connected = false
                     c.close()
-                    updateNotification("PC unreachable — retrying…")
                     attempt++
-                    delay(minOf(30_000L, 2_000L * attempt))
+                    // Out of Bluetooth range *and* unreachable over the network
+                    // after several tries: we have left the house. Stand down
+                    // rather than probe the Wi-Fi every twenty seconds all day —
+                    // the companion service wakes us the moment we come back.
+                    if (bleAway && attempt >= 4) {
+                        Log.i(TAG, "PC out of reach and out of range — standing down")
+                        stopSelf()
+                        return@launch
+                    }
+                    val wait = reconnectDelay(attempt)
+                    if (attempt > 2) updateNotification("PC unreachable — retrying…")
+                    if (wait > 0) waitBeforeRetry(monitor, wait)
                 }
             }
         }
+    }
+
+    /**
+     * Dials the PC, fastest route first.
+     *
+     * The stored address is right the overwhelming majority of the time, so it
+     * gets a 1.2 s fuse — long enough on any sane LAN, short enough that being
+     * wrong is barely noticeable. If it fails we ask [PcLocator], which answers
+     * in a few dozen milliseconds when the daemon is on the network at all.
+     *
+     * @return the address that worked, and the PC's name.
+     */
+    private suspend fun openConnection(c: LinkClient, pc: PairedPc): Pair<String, String> {
+        if (pc.lastAddress.isNotEmpty()) {
+            try {
+                c.connect(pc.lastAddress, pc.port, timeoutMillis = 1_200)
+                return pc.lastAddress to c.hello(Build.MODEL)
+            } catch (e: Exception) {
+                Log.d(TAG, "${pc.lastAddress} did not answer (${e.message}) — looking for the PC")
+                c.close()
+            }
+        }
+        val candidates = PcLocator.discover(this, pc)
+        for (host in candidates) {
+            try {
+                c.connect(host, pc.port, timeoutMillis = 2_500)
+                return host to c.hello(Build.MODEL)
+            } catch (e: Exception) {
+                Log.d(TAG, "$host refused: ${e.message}")
+                c.close()
+            }
+        }
+        error("PC not found on this network")
+    }
+
+    /**
+     * Retry immediately the first two times — a dropped connection is usually a
+     * transient blip and reconnecting takes a few dozen milliseconds. Only back
+     * off once it is clear the PC really is away, and never past 20 s, because
+     * [NetworkMonitor] cuts the wait short as soon as anything changes.
+     */
+    private fun reconnectDelay(attempt: Int): Long = when (attempt) {
+        1, 2 -> 0L
+        3 -> 300L
+        4 -> 1_000L
+        5 -> 3_000L
+        6 -> 8_000L
+        else -> 20_000L
+    }
+
+    /** Sleeps, but wakes early on a network or screen-on event. */
+    private suspend fun waitBeforeRetry(monitor: NetworkMonitor, ms: Long) {
+        withTimeoutOrNull(ms) { monitor.wakeups.receive() }
+    }
+
+    /**
+     * Folder sync runs once on connect, then whenever a watched folder actually
+     * changes, with a two-hour safety net for anything the watches missed
+     * (a file created deeper than [SyncWatcher] looks, typically).
+     *
+     * v2 walked every sync folder every five minutes whether or not anything
+     * had happened — the single biggest thing Linux Link did to the battery.
+     */
+    private suspend fun syncLoop(c: LinkClient) {
+        if (!SyncFolder.isEnabled(this) || !SyncFolder.hasAllFilesAccess()) return
+        startSyncWatcher()
+        while (true) {
+            for (pair in SyncFolder.pairs()) {
+                try { c.runSync(pair.id, pair.dir) }
+                catch (e: Exception) { Log.w(TAG, "sync ${pair.id} : ${e.message}") }
+            }
+            withTimeoutOrNull(2 * 60 * 60_000) { syncWakeups.receive() }
+            // Copying a folder in fires one event per file; wait for the dust
+            // to settle so we transfer once rather than after every file.
+            delay(10_000)
+            while (syncWakeups.tryReceive().isSuccess) { /* drain the burst */ }
+        }
+    }
+
+    private fun startSyncWatcher() {
+        if (syncWatcher != null) return
+        syncWatcher = SyncWatcher { syncWakeups.trySend(Unit) }.also { it.start() }
     }
 
     private fun sendFilesToPc(uris: List<android.net.Uri>) {
@@ -474,6 +589,7 @@ class LinkForegroundService : Service() {
     }
 
     private fun disconnect() {
+        connected = false
         connectionJob?.cancel()
         connectionJob = null
         client?.close()
@@ -484,6 +600,10 @@ class LinkForegroundService : Service() {
 
     override fun onDestroy() {
         disconnect()
+        netMonitor?.stop()
+        netMonitor = null
+        syncWatcher?.stop()
+        syncWatcher = null
         autoClipboard?.let { ac -> android.os.Handler(mainLooper).post { ac.stop() } }
         autoClipboard = null
         mediaSession?.let { ms -> android.os.Handler(mainLooper).post { ms.stop() } }
@@ -525,6 +645,7 @@ class LinkForegroundService : Service() {
     companion object {
         const val ACTION_CONNECT = "org.linuxlink.app.CONNECT"
         const val ACTION_DISCONNECT = "org.linuxlink.app.DISCONNECT"
+        const val ACTION_BLE_GONE = "org.linuxlink.app.BLE_GONE"
         const val ACTION_MEDIA_PREV = "org.linuxlink.app.MEDIA_PREV"
         const val ACTION_MEDIA_PLAYPAUSE = "org.linuxlink.app.MEDIA_PLAYPAUSE"
         const val ACTION_MEDIA_NEXT = "org.linuxlink.app.MEDIA_NEXT"

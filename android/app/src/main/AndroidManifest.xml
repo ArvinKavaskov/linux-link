@@ -11,8 +11,8 @@
     <!-- Synchro Ne pas déranger (accès à la politique de notifications) -->
     <uses-permission android:name="android.permission.ACCESS_NOTIFICATION_POLICY" />
 
-    <uses-permission android:name="android.permission.BLUETOOTH" android:maxSdkVersion="33" />
-    <uses-permission android:name="android.permission.BLUETOOTH_ADMIN" android:maxSdkVersion="33" />
+    <uses-permission android:name="android.permission.BLUETOOTH" android:maxSdkVersion="30" />
+    <uses-permission android:name="android.permission.BLUETOOTH_ADMIN" android:maxSdkVersion="30" />
     <uses-permission android:name="android.permission.BLUETOOTH_CONNECT" />
     <uses-permission android:name="android.permission.BLUETOOTH_SCAN"
         android:usesPermissionFlags="neverForLocation"
@@ -28,6 +28,8 @@
     <uses-permission android:name="android.permission.FOREGROUND_SERVICE" />
     <uses-permission android:name="android.permission.FOREGROUND_SERVICE_CONNECTED_DEVICE" />
     <uses-permission android:name="android.permission.POST_NOTIFICATIONS" />
+    <!-- Reconnexion automatique après un redémarrage du téléphone -->
+    <uses-permission android:name="android.permission.RECEIVE_BOOT_COMPLETED" />
 
     <!-- Scan du QR code d'appairage + mode webcam -->
     <uses-permission android:name="android.permission.CAMERA" />
@@ -53,7 +55,8 @@
 
     <application
         android:label="Linux Link"
-        android:icon="@android:drawable/sym_def_app_icon"
+        android:icon="@mipmap/ic_launcher"
+        android:roundIcon="@mipmap/ic_launcher_round"
         android:theme="@android:style/Theme.Material.Light.NoActionBar"
         android:allowBackup="true">
 
@@ -79,6 +82,12 @@
 
         <!-- Mode webcam : capture caméra streamée au PC -->
         <activity
+            android:name=".PairScanActivity"
+            android:exported="false"
+            android:screenOrientation="portrait"
+            android:theme="@android:style/Theme.Material.NoActionBar.Fullscreen" />
+
+        <activity
             android:name=".WebcamActivity"
             android:exported="false"
             android:screenOrientation="landscape"
@@ -89,6 +98,19 @@
             android:name=".LinkForegroundService"
             android:exported="false"
             android:foregroundServiceType="connectedDevice" />
+
+        <!-- Redémarre la connexion toute seule après un reboot ou une mise à
+             jour de l'app : plus jamais besoin d'ouvrir Linux Link à la main -->
+        <!-- Pas de directBootAware : l'appairage est stocké dans le stockage
+             chiffré par identifiants, donc illisible avant le déverrouillage -->
+        <receiver
+            android:name=".BootReceiver"
+            android:exported="true">
+            <intent-filter>
+                <action android:name="android.intent.action.BOOT_COMPLETED" />
+                <action android:name="android.intent.action.MY_PACKAGE_REPLACED" />
+            </intent-filter>
+        </receiver>
 
         <!-- FileProvider : expose les images de presse-papiers reçues du PC
              pour qu'elles soient collables dans les autres apps -->
@@ -147,7 +169,7 @@
         <activity
             android:name=".ShareReceiverActivity"
             android:exported="true"
-            android:label="Linux Link (presse-papiers PC)"
+            android:label="Linux Link (PC clipboard)"
             android:theme="@android:style/Theme.Translucent.NoTitleBar"
             android:excludeFromRecents="true">
             <!-- Un seul filtre « tous types » : texte (→ clipboard/handoff) et

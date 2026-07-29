@@ -57,11 +57,33 @@ pub fn print_qr(identity: &Identity, port: u16, token: &str) -> Result<()> {
     Ok(())
 }
 
+/// Every address this PC can plausibly be reached on, best guess first.
+///
+/// We used to hand the phone a single IPv4. On a machine with both Ethernet
+/// and Wi-Fi up — or on a laptop that gets a new lease five minutes later —
+/// that one address is a coin flip. Giving the phone the whole list costs a
+/// few bytes in the QR code and saves a re-pairing.
 fn local_addresses() -> Vec<String> {
-    let mut out = Vec::new();
-    if let Ok(ip) = local_ip_address::local_ip() {
-        out.push(ip.to_string());
+    let primary = local_ip_address::local_ip().ok().map(|ip| ip.to_string());
+    let mut out: Vec<String> = Vec::new();
+    if let Some(p) = &primary {
+        out.push(p.clone());
     }
+    if let Ok(list) = local_ip_address::list_afinet_netifas() {
+        for (name, ip) in list {
+            if name == "lo" || ip.is_loopback() || !ip.is_ipv4() {
+                continue;
+            }
+            let s = ip.to_string();
+            if !out.contains(&s) {
+                out.push(s);
+            }
+        }
+    }
+    // Hard cap: every extra address grows the QR payload, and past ~230 bytes
+    // the code jumps a version, the modules shrink and phones stop scanning it.
+    // Two is plenty — the UDP beacon handles the rest.
+    out.truncate(2);
     out
 }
 
@@ -97,5 +119,7 @@ impl Pairing {
 
     pub fn notify_paired(&self, name: &str) {
         let _ = self.events.send(name.to_string());
+        // A new device in the trusted list changes the status file.
+        crate::events::poke();
     }
 }

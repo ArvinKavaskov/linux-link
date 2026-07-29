@@ -18,11 +18,18 @@ class PcCompanionService : CompanionDeviceService() {
         )
     }
 
+    /**
+     * BLE range is about ten metres — one wall. Tearing the link down here was
+     * wrong: walk into the next room and the clipboard, notifications and file
+     * transfers all died while the Wi-Fi link was perfectly healthy. We now
+     * hand the decision to the service, which keeps a working QUIC connection
+     * and only shuts down if the PC really has gone away.
+     */
     override fun onDeviceDisappeared(associationInfo: AssociationInfo) {
-        Log.i(TAG, "PC out of range → disconnecting")
+        Log.i(TAG, "PC out of BLE range → letting the service decide")
         startService(
             Intent(this, LinkForegroundService::class.java)
-                .setAction(LinkForegroundService.ACTION_DISCONNECT)
+                .setAction(LinkForegroundService.ACTION_BLE_GONE)
         )
     }
 

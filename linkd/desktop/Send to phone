@@ -1,33 +1,53 @@
 #!/usr/bin/env bash
-# Nautilus "Send to phone" script (Linux Link).
+# "Send to phone" file-manager script (Linux Link).
+#
+# One script for Nautilus (GNOME/Zorin), Nemo (Cinnamon) and Caja (MATE): each
+# passes the selection in its own environment variable, and custom actions pass
+# the paths as arguments instead, so we accept whichever we are given.
 #
 # Installation:
-#   mkdir -p ~/.local/share/nautilus/scripts
-#   cp "Send to phone" ~/.local/share/nautilus/scripts/
-#   chmod +x ~/.local/share/nautilus/scripts/"Send to phone"
-# Then in Files: right-click on one or more file(s) → Scripts →
-# "Send to phone".
+#   Nautilus : ~/.local/share/nautilus/scripts/
+#   Nemo     : ~/.local/share/nemo/scripts/
+#   Caja     : ~/.config/caja/scripts/
+#   chmod +x "Send to phone"
+# Then right-click on one or more file(s) -> Scripts -> "Send to phone".
 #
-# (For Nemo: ~/.local/share/nemo/scripts/ ; for Dolphin, see the README.)
+# (Nemo also gets a top-level entry through linux-link-send.nemo_action;
+#  Dolphin through the KDE service menu; Thunar through a custom action.)
 
 LINKD="$HOME/.local/bin/linkd"
+[ -x "$LINKD" ] || LINKD="linkd"
+
 count=0
 fail=0
 
-# Nautilus provides the selected paths (one per line) in this variable.
-while IFS= read -r path; do
-    [ -z "$path" ] && continue
-    if [ -f "$path" ]; then
-        if "$LINKD" send-file "$path" >/dev/null 2>&1; then
-            count=$((count + 1))
-        else
-            fail=$((fail + 1))
-        fi
+send() {
+    [ -f "$1" ] || return 0
+    if "$LINKD" send-file "$1" >/dev/null 2>&1; then
+        count=$((count + 1))
+    else
+        fail=$((fail + 1))
     fi
-done <<< "$NAUTILUS_SCRIPT_SELECTED_FILE_PATHS"
+}
+
+# The file manager's own variable, whichever one is set.
+SELECTION="${NAUTILUS_SCRIPT_SELECTED_FILE_PATHS:-${NEMO_SCRIPT_SELECTED_FILE_PATHS:-${CAJA_SCRIPT_SELECTED_FILE_PATHS:-}}}"
+
+if [ -n "$SELECTION" ]; then
+    while IFS= read -r path; do
+        [ -n "$path" ] && send "$path"
+    done <<< "$SELECTION"
+else
+    # Called with the paths as arguments instead.
+    for path in "$@"; do
+        send "$path"
+    done
+fi
 
 if command -v notify-send >/dev/null 2>&1; then
-    if [ "$fail" -eq 0 ]; then
+    if [ "$count" -eq 0 ] && [ "$fail" -eq 0 ]; then
+        notify-send "Linux Link" "Nothing to send."
+    elif [ "$fail" -eq 0 ]; then
         notify-send "Linux Link" "$count file(s) sent to the phone 📎"
     else
         notify-send "Linux Link" "$count sent, $fail failed. Is the phone connected?"

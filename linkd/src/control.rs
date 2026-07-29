@@ -116,7 +116,36 @@ async fn handle(
             }
         } else if let Some(rest) = line.strip_prefix("LOCKMODE ") {
             prox.set_enabled(rest.trim() == "on");
+        } else if let Some(rest) = line.strip_prefix("FORGET ") {
+            let reply = forget_device(rest.trim()).await;
+            let _ = wr.write_all(reply.as_bytes()).await;
+            let _ = wr.flush().await;
+        } else if line == "PING" {
+            let _ = wr.write_all(b"PONG\n").await;
+            let _ = wr.flush().await;
         }
+    }
+}
+
+/// Drops a device from the trusted list. The phone keeps its certificate but
+/// the next handshake is refused, which is exactly what "forget" should mean:
+/// no more automatic reconnection until the user pairs it again.
+async fn forget_device(fingerprint: &str) -> String {
+    if fingerprint.is_empty() {
+        return "ERR no fingerprint\n".to_string();
+    }
+    let mut peers = match crate::identity::TrustedPeers::load() {
+        Ok(p) => p,
+        Err(e) => return format!("ERR {e}\n"),
+    };
+    match peers.forget(fingerprint) {
+        Ok(Some(name)) => {
+            tracing::info!("🗑 Device forgotten: {name}");
+            crate::events::poke();
+            format!("OK {name}\n")
+        }
+        Ok(None) => "ERR unknown device\n".to_string(),
+        Err(e) => format!("ERR {e}\n"),
     }
 }
 
@@ -207,6 +236,29 @@ pub async fn pair_live() -> Result<()> {
         _ => println!("⏱ Time elapsed — run \"Pair a device…\" again if needed."),
     }
     Ok(())
+}
+
+/// Asks the daemon to forget a device and returns the name it had.
+pub async fn forget(fingerprint: &str) -> Result<String> {
+    let path = socket_path();
+    let stream = UnixStream::connect(&path).await.map_err(|e| {
+        anyhow::anyhow!(
+            "daemon unreachable on {} ({e}). Is the linkd service running?",
+            path.display()
+        )
+    })?;
+    let (rd, mut wr) = stream.into_split();
+    wr.write_all(format!("FORGET {fingerprint}\n").as_bytes()).await?;
+    wr.flush().await?;
+    let reply = BufReader::new(rd)
+        .lines()
+        .next_line()
+        .await?
+        .context("no response from daemon")?;
+    match reply.strip_prefix("OK ") {
+        Some(name) => Ok(name.trim().to_string()),
+        None => anyhow::bail!("{}", reply.trim_start_matches("ERR ").trim()),
+    }
 }
 
 async fn send_line(line: &str) -> Result<()> {

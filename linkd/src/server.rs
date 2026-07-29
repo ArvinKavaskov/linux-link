@@ -21,8 +21,9 @@ pub async fn serve(
     pending: Arc<PendingFiles>,
     battery: Arc<BatteryStore>,
     dnd: Arc<DndSync>,
+    fast_presence: bool,
 ) -> Result<()> {
-    let endpoint = make_endpoint(&identity, port)?;
+    let endpoint = make_endpoint(&identity, port, fast_presence)?;
     tracing::info!("QUIC server listening on 0.0.0.0:{port} (ALPN {})", String::from_utf8_lossy(ALPN));
 
     while let Some(incoming) = endpoint.accept().await {
@@ -49,7 +50,7 @@ pub async fn serve(
     Ok(())
 }
 
-fn make_endpoint(identity: &Identity, port: u16) -> Result<quinn::Endpoint> {
+fn make_endpoint(identity: &Identity, port: u16, fast_presence: bool) -> Result<quinn::Endpoint> {
     let cert = CertificateDer::from(identity.cert_der.clone());
     let key = PrivateKeyDer::Pkcs8(PrivatePkcs8KeyDer::from(identity.key_der.clone()));
 
@@ -63,12 +64,22 @@ fn make_endpoint(identity: &Identity, port: u16) -> Result<quinn::Endpoint> {
 
     let mut server_config =
         quinn::ServerConfig::with_crypto(Arc::new(QuicServerConfig::try_from(tls)?));
+    // Every keep-alive packet wakes the phone's Wi-Fi radio, and the radio is
+    // by far the most expensive thing we can ask a phone to do. One packet
+    // every 3 s (the v2 setting) meant the radio never reached a deep sleep
+    // state; 20 s is still far inside any NAT binding timeout and cuts those
+    // wakeups by almost 7×.
+    //
+    // Proximity lock is the one feature that needs to *notice* the phone
+    // leaving quickly, so when it is on we trade some battery for a 6 s beat.
+    let (keep_alive, idle) = if fast_presence { (6, 20) } else { (20, 60) };
     let mut transport = quinn::TransportConfig::default();
     transport.max_idle_timeout(Some(quinn::IdleTimeout::try_from(
-        std::time::Duration::from_secs(10),
+        std::time::Duration::from_secs(idle),
     )?));
-    transport.keep_alive_interval(Some(std::time::Duration::from_secs(3)));
+    transport.keep_alive_interval(Some(std::time::Duration::from_secs(keep_alive)));
     server_config.transport_config(Arc::new(transport));
+    tracing::info!("QUIC keep-alive {keep_alive}s, idle timeout {idle}s");
     let addr: SocketAddr = format!("0.0.0.0:{port}").parse()?;
     Ok(quinn::Endpoint::server(server_config, addr)?)
 }

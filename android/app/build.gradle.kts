@@ -12,8 +12,8 @@ android {
         applicationId = "org.linuxlink.app"
         minSdk = 33
         targetSdk = 35
-        versionCode = 52
-        versionName = "0.52.0"
+        versionCode = 300
+        versionName = "3.0.0"
     }
 
     buildFeatures { compose = true }

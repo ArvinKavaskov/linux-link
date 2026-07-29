@@ -20,21 +20,69 @@ impl DndSync {
     }
 }
 
+/// Mirrors the PC's "do not disturb" to the phone.
+///
+/// v2 asked `gsettings` every three seconds — 1 200 process spawns an hour for
+/// a setting the user touches maybe twice a day. `gsettings monitor` is a
+/// single long-lived process that prints one line when the key actually
+/// changes, and sleeps the rest of the time.
 pub fn spawn_watcher(hub: Arc<ClipboardHub>, dnd: Arc<DndSync>) {
     tokio::spawn(async move {
-        loop {
-            tokio::time::sleep(std::time::Duration::from_secs(3)).await;
-            let Some(cur) = read_pc_dnd().await else { continue };
-            let prev = dnd.last.load(Ordering::Relaxed);
-            if prev != cur as i8 {
-                dnd.last.store(cur as i8, Ordering::Relaxed);
-                if prev != -1 {
-                    tracing::info!("🌙 PC DND changed → {} (push)", if cur { "enabled" } else { "disabled" });
-                }
-                hub.push(Message::Dnd { on: cur }).await;
-            }
+        // Publish the current state once, so a phone connecting now is in sync.
+        let Some(initial) = read_pc_dnd().await else {
+            tracing::info!("DND sync off: no GNOME notifications schema on this desktop");
+            return;
+        };
+        dnd.last.store(initial as i8, Ordering::Relaxed);
+        hub.push(Message::Dnd { on: initial }).await;
+        if let Err(e) = monitor(&hub, &dnd).await {
+            tracing::warn!("DND monitor unavailable ({e}) — falling back to polling");
+            poll(hub, dnd).await;
         }
     });
+}
+
+async fn monitor(hub: &Arc<ClipboardHub>, dnd: &Arc<DndSync>) -> anyhow::Result<()> {
+    use tokio::io::{AsyncBufReadExt, BufReader};
+
+    let mut child = Command::new("gsettings")
+        .args(["monitor", "org.gnome.desktop.notifications", "show-banners"])
+        .stdout(std::process::Stdio::piped())
+        .stderr(std::process::Stdio::null())
+        .kill_on_drop(true)
+        .spawn()?;
+    let stdout = child.stdout.take().ok_or_else(|| anyhow::anyhow!("no stdout"))?;
+    tracing::info!("DND: event-driven (gsettings monitor)");
+
+    let mut lines = BufReader::new(stdout).lines();
+    while let Some(line) = lines.next_line().await? {
+        // Format: "show-banners: false"
+        let Some(value) = line.split(':').nth(1) else { continue };
+        let cur = value.trim() == "false";
+        let prev = dnd.last.swap(cur as i8, Ordering::Relaxed);
+        if prev == cur as i8 {
+            continue;
+        }
+        tracing::info!("🌙 PC DND changed → {} (push)", if cur { "enabled" } else { "disabled" });
+        hub.push(Message::Dnd { on: cur }).await;
+    }
+    anyhow::bail!("gsettings monitor exited")
+}
+
+/// Last resort for desktops without GSettings notifications keys.
+async fn poll(hub: Arc<ClipboardHub>, dnd: Arc<DndSync>) {
+    loop {
+        tokio::time::sleep(std::time::Duration::from_secs(3)).await;
+        let Some(cur) = read_pc_dnd().await else { continue };
+        let prev = dnd.last.load(Ordering::Relaxed);
+        if prev != cur as i8 {
+            dnd.last.store(cur as i8, Ordering::Relaxed);
+            if prev != -1 {
+                tracing::info!("🌙 PC DND changed → {} (push)", if cur { "enabled" } else { "disabled" });
+            }
+            hub.push(Message::Dnd { on: cur }).await;
+        }
+    }
 }
 
 async fn set_pc_dnd(on: bool) {

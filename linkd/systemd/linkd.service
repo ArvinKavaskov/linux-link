@@ -10,12 +10,21 @@
 [Unit]
 Description=Linux Link daemon (Linux <-> Android continuity)
 After=network-online.target bluetooth.target
+# Five restarts in a minute is a real bug, not a blip — but giving up after
+# the default three would be far too easy on a slow login.
+StartLimitBurst=5
+StartLimitIntervalSec=60
 
 [Service]
 ExecStart=%h/.local/bin/linkd run
-Restart=on-failure
-RestartSec=3
+# always, not on-failure: a clean exit still means the phone has nothing to
+# talk to. The daemon is supposed to be running whenever the session is.
+Restart=always
+RestartSec=2
 Environment=RUST_LOG=info
+# Idle daemon: never let it compete with what the user is actually doing.
+Nice=5
+IOSchedulingClass=idle
 
 [Install]
 WantedBy=default.target

@@ -21,6 +21,9 @@ impl BatteryStore {
         let state = BatteryState { level, charging };
         *self.last.lock().unwrap() = Some(state);
         save(&state);
+        // The tray shows this percentage — refresh it now rather than on the
+        // next tick of a timer we no longer have.
+        crate::events::poke();
     }
 
     pub fn snapshot(&self) -> Option<BatteryState> {

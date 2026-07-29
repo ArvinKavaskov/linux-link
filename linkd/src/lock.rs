@@ -22,6 +22,7 @@ impl ProximityLock {
         self.enabled.store(on, Ordering::Relaxed);
         save_enabled(on);
         tracing::info!("Proximity lock: {}", if on { "enabled" } else { "disabled" });
+        crate::events::poke();
     }
 
     pub fn is_enabled(&self) -> bool {
@@ -29,18 +30,23 @@ impl ProximityLock {
     }
 }
 
+/// Locks the session when the phone goes away, unlocks it when it comes back.
+///
+/// v2 woke up every two seconds to count subscribers. The count only changes
+/// when a device connects or disconnects, and both of those now `poke()` the
+/// event bus — so this task sleeps indefinitely and is woken by the thing that
+/// actually matters. The only timer left is the grace period itself: a phone
+/// that drops for a second while switching access point should not lock the
+/// PC, so we wait `GRACE` before acting and re-check when it expires.
 pub fn spawn(hub: Arc<ClipboardHub>, prox: Arc<ProximityLock>) {
     tokio::spawn(async move {
+        let mut rx = crate::events::subscribe();
         let mut we_locked = false;
         let mut absent_since: Option<Instant> = None;
         loop {
-            tokio::time::sleep(Duration::from_secs(2)).await;
             if !prox.is_enabled() {
                 absent_since = None;
-                continue;
-            }
-            let present = hub.subscriber_count().await > 0;
-            if present {
+            } else if hub.subscriber_count().await > 0 {
                 absent_since = None;
                 if we_locked {
                     unlock_session().await;
@@ -51,6 +57,26 @@ pub fn spawn(hub: Arc<ClipboardHub>, prox: Arc<ProximityLock>) {
                 if !we_locked && since.elapsed() >= GRACE {
                     lock_session().await;
                     we_locked = true;
+                }
+            }
+
+            // Nothing to count down to unless the phone is absent and the
+            // grace period is still running: in every other case we can park
+            // until something happens.
+            let countdown = match absent_since {
+                Some(since) if prox.is_enabled() && !we_locked => {
+                    Some(GRACE.saturating_sub(since.elapsed()))
+                }
+                _ => None,
+            };
+            match countdown {
+                Some(remaining) => {
+                    let _ = tokio::time::timeout(remaining, rx.changed()).await;
+                }
+                None => {
+                    if rx.changed().await.is_err() {
+                        return;
+                    }
                 }
             }
         }

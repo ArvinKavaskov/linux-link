@@ -20,22 +20,34 @@ class LinkClient(private val identity: Identity) {
 
     var expectedFingerprint: String? = null
 
-    suspend fun connect(host: String, port: Int) = withContext(Dispatchers.IO) {
-        val conn = QuicClientConnection.newBuilder()
-            .uri(URI.create("linuxlink://$host:$port"))
-            .applicationProtocol("linuxlink/1")
-            .noServerCertificateCheck()
-            .clientCertificate(identity.certificate)
-            .clientCertificateKey(identity.privateKey)
-            .connectTimeout(Duration.ofSeconds(8))
-            .maxIdleTimeout(Duration.ofSeconds(120))
-            .build()
-        conn.connect()
-        verifyServerFingerprint(conn)
-        val stream = conn.createStream(true)
-        connection = conn
-        writer = stream.outputStream
-        reader = BufferedReader(InputStreamReader(stream.inputStream))
+    /**
+     * Opens the QUIC connection.
+     *
+     * [timeoutMillis] is deliberately a parameter: the reconnection loop tries
+     * the last known address with a very short fuse (about a second) so that a
+     * PC which has moved to a different IP costs us one second, not eight,
+     * before we start looking for it properly.
+     */
+    suspend fun connect(host: String, port: Int, timeoutMillis: Long = 8_000) {
+        withContext(Dispatchers.IO) {
+            val conn = QuicClientConnection.newBuilder()
+                .uri(URI.create("linuxlink://$host:$port"))
+                .applicationProtocol("linuxlink/1")
+                .noServerCertificateCheck()
+                .clientCertificate(identity.certificate)
+                .clientCertificateKey(identity.privateKey)
+                .connectTimeout(Duration.ofMillis(timeoutMillis))
+                // The PC sends a keep-alive every 20 s (6 s with proximity lock
+                // on), so 90 s of silence really does mean the link is gone.
+                .maxIdleTimeout(Duration.ofSeconds(90))
+                .build()
+            conn.connect()
+            verifyServerFingerprint(conn)
+            val stream = conn.createStream(true)
+            connection = conn
+            writer = stream.outputStream
+            reader = BufferedReader(InputStreamReader(stream.inputStream))
+        }
     }
 
     private fun verifyServerFingerprint(conn: QuicClientConnection) {

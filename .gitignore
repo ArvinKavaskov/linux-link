@@ -10,6 +10,9 @@ target/
 /android/captures/
 /android/local.properties
 /android/.idea/
+.idea/
+/android/app/.gradle/
+/android/app/local.properties
 *.iml
 *.keystore
 *.jks

@@ -1,0 +1,286 @@
+use eframe::egui::{self, Color32, Pos2, Rect, Rounding, Sense, Vec2};
+use qrcode::{EcLevel, QrCode};
+use std::io::{BufRead, BufReader, Write};
+use std::os::unix::net::UnixStream;
+use std::path::PathBuf;
+use std::sync::{Arc, Mutex};
+use std::time::Instant;
+
+const PAIR_WINDOW_SECS: u64 = 120;
+
+const BG: Color32 = Color32::from_rgb(0x12, 0x10, 0x18);
+const CARD: Color32 = Color32::from_rgb(0xFF, 0xFF, 0xFF);
+const MODULE: Color32 = Color32::from_rgb(0x14, 0x12, 0x1A);
+const ACCENT: Color32 = Color32::from_rgb(0x9E, 0x7B, 0xFF);
+const OK_GREEN: Color32 = Color32::from_rgb(0x4C, 0xC9, 0x6E);
+const TEXT_DIM: Color32 = Color32::from_rgb(0xA8, 0xA2, 0xB8);
+
+#[derive(Clone)]
+enum PairState {
+    Connecting,
+    Waiting { payload: String, since: Instant },
+    Paired { name: String, at: Instant },
+    Timeout,
+    Error(String),
+}
+
+fn socket_path() -> PathBuf {
+    std::env::var_os("XDG_RUNTIME_DIR")
+        .map(PathBuf::from)
+        .unwrap_or_else(std::env::temp_dir)
+        .join("linuxlink.sock")
+}
+
+fn start_pairing(state: Arc<Mutex<PairState>>) {
+    *state.lock().unwrap() = PairState::Connecting;
+    std::thread::spawn(move || {
+        let set = |s: PairState| *state.lock().unwrap() = s;
+        let stream = match UnixStream::connect(socket_path()) {
+            Ok(s) => s,
+            Err(e) => {
+                set(PairState::Error(format!(
+                    "Daemon unreachable ({e}).\nIs the linkd service running?"
+                )));
+                return;
+            }
+        };
+        let mut wr = match stream.try_clone() {
+            Ok(w) => w,
+            Err(e) => {
+                set(PairState::Error(e.to_string()));
+                return;
+            }
+        };
+        if wr.write_all(b"PAIR\n").and_then(|_| wr.flush()).is_err() {
+            set(PairState::Error("Cannot talk to the daemon.".into()));
+            return;
+        }
+        let mut lines = BufReader::new(stream).lines();
+        match lines.next() {
+            Some(Ok(payload)) if !payload.starts_with("ERR ") => {
+                set(PairState::Waiting { payload, since: Instant::now() });
+            }
+            Some(Ok(err)) => {
+                set(PairState::Error(err.trim_start_matches("ERR ").to_string()));
+                return;
+            }
+            _ => {
+                set(PairState::Error("No response from the daemon.".into()));
+                return;
+            }
+        }
+        match lines.next() {
+            Some(Ok(l)) if l.starts_with("PAIRED ") => {
+                let name = l.trim_start_matches("PAIRED ").trim().to_string();
+                set(PairState::Paired { name, at: Instant::now() });
+            }
+            _ => set(PairState::Timeout),
+        }
+    });
+}
+
+struct QrRender {
+    width: usize,
+    dark: Vec<bool>,
+}
+
+fn build_qr(payload: &str) -> Option<QrRender> {
+    // Level M keeps the module count low -> bigger squares, easier to scan.
+    let code = QrCode::with_error_correction_level(payload.as_bytes(), EcLevel::M).ok()?;
+    let width = code.width();
+    let dark = code
+        .to_colors()
+        .into_iter()
+        .map(|c| c == qrcode::Color::Dark)
+        .collect();
+    Some(QrRender { width, dark })
+}
+
+struct PairApp {
+    state: Arc<Mutex<PairState>>,
+    qr: Option<(String, QrRender)>,
+    logo: Option<egui::TextureHandle>,
+}
+
+impl PairApp {
+    fn new(cc: &eframe::CreationContext<'_>) -> Self {
+        let logo = image::load_from_memory(include_bytes!("../../assets/logo.png"))
+            .ok()
+            .map(|img| {
+                let img = img.to_rgba8();
+                let (w, h) = img.dimensions();
+                let ci = egui::ColorImage::from_rgba_unmultiplied(
+                    [w as usize, h as usize],
+                    img.as_raw(),
+                );
+                cc.egui_ctx.load_texture("logo", ci, Default::default())
+            });
+        let state = Arc::new(Mutex::new(PairState::Connecting));
+        start_pairing(state.clone());
+        Self { state, qr: None, logo }
+    }
+
+    fn draw_qr(&mut self, ui: &mut egui::Ui, payload: &str) {
+        if self.qr.as_ref().map(|(p, _)| p.as_str()) != Some(payload) {
+            if let Some(r) = build_qr(payload) {
+                self.qr = Some((payload.to_string(), r));
+            }
+        }
+        let Some((_, qr)) = &self.qr else { return };
+
+        let card_size = ui.available_width().min(396.0);
+        let (rect, _) = ui.allocate_exact_size(Vec2::splat(card_size), Sense::hover());
+        let painter = ui.painter_at(rect.expand(4.0));
+        painter.rect_filled(rect, Rounding::same(22.0), CARD);
+
+        // Snap the module size to whole pixels so every square stays crisp
+        // (no anti-aliased gray edges the phone camera struggles with).
+        let ppp = ui.ctx().pixels_per_point();
+        let w = qr.width;
+        let pad_min = card_size * 0.06;
+        let m = (((card_size - 2.0 * pad_min) / w as f32) * ppp).floor() / ppp;
+        let qr_side = m * w as f32;
+        let origin = Pos2::new(
+            rect.center().x - qr_side / 2.0,
+            rect.center().y - qr_side / 2.0,
+        );
+
+        for y in 0..w {
+            for x in 0..w {
+                if !qr.dark[y * w + x] {
+                    continue;
+                }
+                let r = Rect::from_min_size(
+                    Pos2::new(origin.x + x as f32 * m, origin.y + y as f32 * m),
+                    Vec2::splat(m),
+                );
+                painter.rect_filled(r, Rounding::ZERO, MODULE);
+            }
+        }
+    }
+}
+
+impl eframe::App for PairApp {
+    fn update(&mut self, ctx: &egui::Context, _frame: &mut eframe::Frame) {
+        ctx.request_repaint_after(std::time::Duration::from_millis(250));
+        let state = self.state.lock().unwrap().clone();
+
+        egui::CentralPanel::default()
+            .frame(egui::Frame::none().fill(BG).inner_margin(24.0))
+            .show(ctx, |ui| {
+                ui.vertical_centered(|ui| {
+                    if let Some(logo) = &self.logo {
+                        ui.add(
+                            egui::Image::new(logo)
+                                .fit_to_exact_size(Vec2::splat(56.0))
+                                .rounding(Rounding::same(14.0)),
+                        );
+                    }
+                    ui.add_space(6.0);
+                    ui.label(
+                        egui::RichText::new("Linux Link")
+                            .size(24.0)
+                            .strong()
+                            .color(Color32::WHITE),
+                    );
+                    ui.label(egui::RichText::new("Pair a device").size(14.0).color(TEXT_DIM));
+                    ui.add_space(18.0);
+
+                    match &state {
+                        PairState::Connecting => {
+                            ui.add_space(60.0);
+                            ui.spinner();
+                            ui.add_space(10.0);
+                            ui.label(egui::RichText::new("Contacting the daemon…").color(TEXT_DIM));
+                        }
+                        PairState::Waiting { payload, since } => {
+                            self.draw_qr(ui, payload);
+                            ui.add_space(16.0);
+                            ui.label(
+                                egui::RichText::new("Scan this code with the Linux Link app")
+                                    .size(15.0)
+                                    .color(Color32::WHITE),
+                            );
+                            let left = PAIR_WINDOW_SECS.saturating_sub(since.elapsed().as_secs());
+                            ui.add_space(4.0);
+                            ui.label(
+                                egui::RichText::new(format!(
+                                    "Waiting for the phone…  {}:{:02}",
+                                    left / 60,
+                                    left % 60
+                                ))
+                                .size(13.0)
+                                .color(ACCENT),
+                            );
+                        }
+                        PairState::Paired { name, at } => {
+                            ui.add_space(50.0);
+                            ui.label(egui::RichText::new("✔").size(52.0).color(OK_GREEN));
+                            ui.add_space(8.0);
+                            ui.label(
+                                egui::RichText::new(format!("Paired with {name}"))
+                                    .size(18.0)
+                                    .strong()
+                                    .color(Color32::WHITE),
+                            );
+                            ui.add_space(4.0);
+                            ui.label(
+                                egui::RichText::new("Active immediately — nothing to restart.")
+                                    .size(13.0)
+                                    .color(TEXT_DIM),
+                            );
+                            if at.elapsed().as_secs_f32() > 2.5 {
+                                ctx.send_viewport_cmd(egui::ViewportCommand::Close);
+                            }
+                        }
+                        PairState::Timeout => {
+                            ui.add_space(60.0);
+                            ui.label(egui::RichText::new("⏱").size(44.0).color(TEXT_DIM));
+                            ui.add_space(8.0);
+                            ui.label(
+                                egui::RichText::new("Time elapsed")
+                                    .size(17.0)
+                                    .strong()
+                                    .color(Color32::WHITE),
+                            );
+                            ui.add_space(14.0);
+                            if ui.button(egui::RichText::new("  Try again  ").size(15.0)).clicked() {
+                                start_pairing(self.state.clone());
+                            }
+                        }
+                        PairState::Error(msg) => {
+                            ui.add_space(50.0);
+                            ui.label(egui::RichText::new("⚠").size(44.0).color(ACCENT));
+                            ui.add_space(8.0);
+                            ui.label(
+                                egui::RichText::new(msg)
+                                    .size(14.0)
+                                    .color(Color32::WHITE),
+                            );
+                            ui.add_space(14.0);
+                            if ui.button(egui::RichText::new("  Try again  ").size(15.0)).clicked() {
+                                start_pairing(self.state.clone());
+                            }
+                        }
+                    }
+                });
+            });
+    }
+}
+
+fn main() -> eframe::Result {
+    let options = eframe::NativeOptions {
+        viewport: egui::ViewportBuilder::default()
+            .with_inner_size([470.0, 700.0])
+            .with_min_inner_size([440.0, 650.0])
+            .with_resizable(false)
+            .with_app_id("linux-link")
+            .with_title("Linux Link — Pairing"),
+        ..Default::default()
+    };
+    eframe::run_native(
+        "Linux Link — Pairing",
+        options,
+        Box::new(|cc| Ok(Box::new(PairApp::new(cc)))),
+    )
+}

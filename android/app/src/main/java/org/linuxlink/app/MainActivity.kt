@@ -284,7 +284,8 @@ class MainActivity : ComponentActivity() {
         qrScanner.launch(
             ScanOptions()
                 .setDesiredBarcodeFormats(ScanOptions.QR_CODE)
-                .setPrompt("Scan the QR code shown by `linkd pair` on your PC")
+                .setCaptureActivity(PairScanActivity::class.java)
+                .setOrientationLocked(true)
                 .setBeepEnabled(false)
         )
     }
@@ -295,14 +296,31 @@ class MainActivity : ComponentActivity() {
             try {
                 val identity = Identity.loadOrCreate(this@MainActivity)
                 val client = LinkClient(identity).also { it.expectedFingerprint = payload.fingerprint }
-                val host = payload.addrs.firstOrNull() ?: error("no address in the QR")
-                client.connect(host, payload.port)
+                // The QR carries every address the PC answers on (Ethernet and
+                // Wi-Fi, typically). Try them in order instead of betting the
+                // whole pairing on the first one.
+                var host: String? = null
+                for (candidate in payload.addrs) {
+                    try {
+                        client.connect(candidate, payload.port, timeoutMillis = 3_000)
+                        host = candidate
+                        break
+                    } catch (e: Exception) {
+                        Log.d(TAG, "$candidate unreachable: ${e.message}")
+                        client.close()
+                    }
+                }
+                val address = host ?: error("PC unreachable at ${payload.addrs.joinToString()}")
                 val pcName = client.pair(payload.token, Build.MODEL)
                 client.close()
 
                 PairedPc.save(
                     this@MainActivity,
-                    PairedPc(pcName, host, payload.port, payload.fingerprint)
+                    PairedPc(pcName, address, payload.port, payload.fingerprint)
+                )
+                // Keep the others as fallbacks for the rediscovery path.
+                PcLocator.rememberAlternates(
+                    this@MainActivity, payload.addrs.filter { it != address }
                 )
                 status = "Paired with $pcName ✔ — companion association…"
                 pendingPairing = payload

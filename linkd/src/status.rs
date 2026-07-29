@@ -23,7 +23,6 @@ pub struct Status {
     pub battery: i32,
     pub charging: bool,
     pub proximity: bool,
-    pub updated: u64,
 }
 
 pub fn status_file() -> PathBuf {
@@ -34,12 +33,22 @@ pub fn status_file() -> PathBuf {
     dir.join("status.json")
 }
 
+/// Keeps `status.json` in step with reality, for the tray icon to read.
+///
+/// v2 rebuilt this file every two seconds: a trusted-peers read from disk plus
+/// a write, 43 000 times a day, to say the same thing. Everything in here
+/// changes on an event — a phone connects, the battery moves, the proximity
+/// lock is toggled — so we park on the event bus and only write when the
+/// serialized content actually differs. The 30 s timeout is pure belt and
+/// braces in case something changes state without poking the bus.
 pub fn spawn(
     clipboard: Arc<ClipboardHub>,
     battery: Arc<BatteryStore>,
     proximity: Arc<ProximityLock>,
 ) {
     tokio::spawn(async move {
+        let mut rx = crate::events::subscribe();
+        let mut last_json = String::new();
         loop {
             let (level, charging) = match battery.snapshot() {
                 Some(s) => (s.level, s.charging),
@@ -65,11 +74,6 @@ pub fn spawn(
                 .or_else(|| peers.first().map(|p| p.name.clone()))
                 .unwrap_or_default();
 
-            let updated = std::time::SystemTime::now()
-                .duration_since(std::time::UNIX_EPOCH)
-                .map(|d| d.as_secs())
-                .unwrap_or(0);
-
             let status = Status {
                 connected: device_count > 0,
                 device_count,
@@ -78,12 +82,15 @@ pub fn spawn(
                 battery: level,
                 charging,
                 proximity: proximity.is_enabled(),
-                updated,
             };
             if let Ok(json) = serde_json::to_string(&status) {
-                let _ = tokio::fs::write(status_file(), json).await;
+                if json != last_json {
+                    let _ = tokio::fs::write(status_file(), &json).await;
+                    last_json = json;
+                }
             }
-            tokio::time::sleep(Duration::from_secs(2)).await;
+
+            let _ = tokio::time::timeout(Duration::from_secs(30), rx.changed()).await;
         }
     });
 }

@@ -1,6 +1,6 @@
 [package]
 name = "linkd"
-version = "0.51.0"
+version = "3.0.0"
 edition = "2021"
 description = "Linux Link daemon — Linux <-> Android continuity"
 license = "GPL-3.0-or-later"
@@ -29,6 +29,10 @@ futures-util = "0.3"
 clap = { version = "4", features = ["derive"] }
 # System tray icon (StatusNotifierItem / AppIndicator) — PC app.
 ksni = "0.3"
+# Pairing window (QR code display).
+eframe = { version = "0.29", default-features = false, features = ["glow", "wayland", "x11", "default_fonts"] }
+image = { version = "0.25", default-features = false, features = ["png"] }
+x11rb = { version = "0.14.0", features = ["xfixes"] }
 
 [profile.release]
 lto = true

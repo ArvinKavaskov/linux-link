@@ -1,0 +1,10 @@
+[Nemo Action]
+# Top-level "Send to phone" entry in Nemo's right-click menu (Cinnamon).
+# install.sh rewrites Exec with the absolute path to the script.
+Name=Send to phone
+Comment=Send the selection to the phone via Linux Link
+Exec=<SENDER> %F
+Icon-Name=linux-link
+Selection=notnone
+Extensions=any;
+Quote=double
