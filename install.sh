@@ -296,6 +296,45 @@ if [ -f "$HYPR_CONF" ]; then
     fi
 fi
 
+# ------------------------------------------------------------- firewall
+# Ubuntu and Zorin ship with no active firewall, but CachyOS enables ufw and
+# Fedora enables firewalld out of the box — and both silently drop the phone's
+# QUIC packets. "Pairing failed: PC unreachable" with the PC a metre away is
+# almost always this.
+open_firewall() {
+    if command -v ufw >/dev/null 2>&1 && sudo ufw status 2>/dev/null | head -1 | grep -qi active; then
+        say "Firewall: ufw is active — Linux Link needs UDP 47100 (QUIC) and 47101 (discovery)"
+        printf '    Open them now? [Y/n] '
+        read -r reply
+        case "$reply" in
+            [nN]*) warn "Skipped. The phone will NOT reach this PC until you run:"
+                   warn "  sudo ufw allow 47100/udp && sudo ufw allow 47101/udp" ;;
+            *)
+                sudo ufw allow 47100/udp comment 'Linux Link QUIC' >/dev/null
+                sudo ufw allow 47101/udp comment 'Linux Link discovery' >/dev/null
+                sudo ufw allow from "$(ip -4 route show default 2>/dev/null | awk '{print $3}' | head -1 | sed 's/\.[0-9]*$/.0\/24/')" to any port 5353 proto udp comment 'mDNS' >/dev/null 2>&1 || true
+                say "Ports opened in ufw."
+                ;;
+        esac
+    elif command -v firewall-cmd >/dev/null 2>&1 && systemctl is-active firewalld >/dev/null 2>&1; then
+        say "Firewall: firewalld is active — Linux Link needs UDP 47100 (QUIC) and 47101 (discovery)"
+        printf '    Open them now? [Y/n] '
+        read -r reply
+        case "$reply" in
+            [nN]*) warn "Skipped. The phone will NOT reach this PC until you run:"
+                   warn "  sudo firewall-cmd --permanent --add-port=47100/udp --add-port=47101/udp && sudo firewall-cmd --reload" ;;
+            *)
+                sudo firewall-cmd --permanent --add-port=47100/udp >/dev/null
+                sudo firewall-cmd --permanent --add-port=47101/udp >/dev/null
+                sudo firewall-cmd --permanent --add-service=mdns >/dev/null 2>&1 || true
+                sudo firewall-cmd --reload >/dev/null
+                say "Ports opened in firewalld."
+                ;;
+        esac
+    fi
+}
+open_firewall
+
 # ---------------------------------------------------- keyboard shortcuts
 if [ "$SHORTCUTS" = 1 ]; then
     say "Global keyboard shortcuts"

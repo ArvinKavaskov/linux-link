@@ -67,6 +67,7 @@ pub enum Message {
     Dnd { on: bool },
     WebcamStart { width: u32, height: u32 },
     MicStart { sample_rate: u32, channels: u32 },
+    SpeakerStart { sample_rate: u32, channels: u32 },
     SyncIndex {
         #[serde(default)]
         folder: String,

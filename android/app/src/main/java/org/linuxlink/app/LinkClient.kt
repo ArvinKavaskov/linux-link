@@ -183,6 +183,23 @@ class LinkClient(private val identity: Identity) {
         return WebcamWriter(out)
     }
 
+    /**
+     * Asks the PC to become one speaker richer. Returns the stream the PC
+     * pushes raw PCM into — the mirror image of [openMic]: there we produce
+     * and the PC consumes, here the PC produces and we play.
+     */
+    fun openSpeaker(sampleRate: Int, channels: Int): java.io.InputStream {
+        val conn = connection ?: error("not connected")
+        val stream = conn.createStream(true)
+        val out = stream.outputStream
+        val header = JSONObject().apply {
+            put("type", "speaker_start"); put("sample_rate", sampleRate); put("channels", channels)
+        }
+        out.write((header.toString() + "\n").toByteArray())
+        out.flush()
+        return stream.inputStream
+    }
+
     fun openMic(sampleRate: Int, channels: Int): MicWriter {
         val conn = connection ?: error("not connected")
         val stream = conn.createStream(true)

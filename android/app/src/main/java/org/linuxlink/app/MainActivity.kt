@@ -110,6 +110,18 @@ class MainActivity : ComponentActivity() {
     private var pendingPairing: QrPayload? = null
     private val uiScope = CoroutineScope(Dispatchers.Main)
 
+    private var speakerOn by mutableStateOf(false)
+    private var micOn by mutableStateOf(false)
+
+    private val micPermLauncher = registerForActivityResult(
+        ActivityResultContracts.RequestPermission()
+    ) { granted ->
+        if (granted) {
+            audioAction(PhoneAudioService.ACTION_MIC_START)
+            micOn = true
+        }
+    }
+
     private val qrScanner = registerForActivityResult(ScanContract()) { result ->
         result.contents?.let { raw ->
             runCatching { QrPayload.parse(raw) }
@@ -212,8 +224,19 @@ class MainActivity : ComponentActivity() {
                             ) { openNotificationAccessSettings() }
                         }
 
-                        Section("Camera & mic") {
-                            WideButton("📷 Webcam / 🎤 Mic (phone → PC)") {
+                        Section("Speaker & mic") {
+                            WideButton(
+                                if (speakerOn) "🔊 PC speaker: on ✔ (tap to stop)"
+                                else "🔊 Use as the PC's speaker"
+                            ) { toggleSpeaker() }
+                            WideButton(
+                                if (micOn) "🎤 PC microphone: on ✔ (tap to stop)"
+                                else "🎤 Use as the PC's microphone"
+                            ) { toggleMic() }
+                        }
+
+                        Section("Camera") {
+                            WideButton("📷 Webcam (phone → PC)") {
                                 startActivity(Intent(this@MainActivity, WebcamActivity::class.java))
                             }
                         }
@@ -288,6 +311,61 @@ class MainActivity : ComponentActivity() {
                 .setOrientationLocked(true)
                 .setBeepEnabled(false)
         )
+    }
+
+    override fun onResume() {
+        super.onResume()
+        // The audio service flips its own switches off when a stream dies;
+        // coming back to the app is when the buttons catch up with reality.
+        speakerOn = PhoneAudioService.speakerOn
+        micOn = PhoneAudioService.micOn
+    }
+
+    private fun audioAction(action: String) {
+        val intent = Intent(this, PhoneAudioService::class.java).setAction(action)
+        if (action == PhoneAudioService.ACTION_SPEAKER_START ||
+            action == PhoneAudioService.ACTION_MIC_START
+        ) {
+            startForegroundService(intent)
+        } else {
+            startService(intent)
+        }
+    }
+
+    private fun toggleSpeaker() {
+        if (speakerOn) {
+            audioAction(PhoneAudioService.ACTION_SPEAKER_STOP)
+            speakerOn = false
+            return
+        }
+        if (LinkForegroundService.activeClient == null) {
+            status = "PC not connected"
+            return
+        }
+        audioAction(PhoneAudioService.ACTION_SPEAKER_START)
+        speakerOn = true
+        status = "Select “Phone (Linux Link)” as output on the PC"
+    }
+
+    private fun toggleMic() {
+        if (micOn) {
+            audioAction(PhoneAudioService.ACTION_MIC_STOP)
+            micOn = false
+            return
+        }
+        if (LinkForegroundService.activeClient == null) {
+            status = "PC not connected"
+            return
+        }
+        if (checkSelfPermission(android.Manifest.permission.RECORD_AUDIO) ==
+            android.content.pm.PackageManager.PERMISSION_GRANTED
+        ) {
+            audioAction(PhoneAudioService.ACTION_MIC_START)
+            micOn = true
+            status = "Select “Linux Link” as microphone on the PC"
+        } else {
+            micPermLauncher.launch(android.Manifest.permission.RECORD_AUDIO)
+        }
     }
 
     private fun pairOverWifi(payload: QrPayload) {

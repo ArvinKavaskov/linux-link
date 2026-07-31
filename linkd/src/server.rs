@@ -244,6 +244,16 @@ async fn handle_stream(
                 let _ = send.finish();
                 return Ok(());
             }
+            Message::SpeakerStart { sample_rate, channels } if trusted => {
+                match crate::speaker::SpeakerFeed::start(sample_rate, channels).await {
+                    Ok(feed) => {
+                        stream_speaker(&mut reader, &mut send, feed).await;
+                    }
+                    Err(e) => tracing::warn!("speaker: {e:#}"),
+                }
+                let _ = send.finish();
+                return Ok(());
+            }
             Message::SyncIndex { folder, files } if trusted => {
                 if let Err(e) = crate::sync::handle(&mut reader, &mut send, &folder, files).await {
                     tracing::warn!("sync: {e:#}");
@@ -343,6 +353,7 @@ async fn handle_stream(
             | Message::Dnd { .. }
             | Message::WebcamStart { .. }
             | Message::MicStart { .. }
+            | Message::SpeakerStart { .. }
             | Message::SyncIndex { .. }
             | Message::FileStart { .. }
             | Message::FilePull { .. }
@@ -373,6 +384,38 @@ async fn receive_webcam(reader: &mut BufReader<quinn::RecvStream>, mut feed: cra
         }
         if feed.write_frame(&frame).await.is_err() {
             break;
+        }
+    }
+}
+
+/// Pumps PCM from parec to the phone. The direction is the mirror of the mic:
+/// here the PC produces and the phone consumes. We also watch our receive side
+/// — the phone closing its end (or sending anything at all) is the stop signal.
+async fn stream_speaker(
+    reader: &mut BufReader<quinn::RecvStream>,
+    send: &mut quinn::SendStream,
+    mut feed: crate::speaker::SpeakerFeed,
+) {
+    let Some(mut pcm) = feed.take_stdout() else { return };
+    let mut buf = vec![0u8; 8192];
+    let mut line = String::new();
+    loop {
+        tokio::select! {
+            n = pcm.read(&mut buf) => {
+                let n = match n {
+                    Ok(0) | Err(_) => break,
+                    Ok(n) => n,
+                };
+                if send.write_all(&buf[..n]).await.is_err() {
+                    break;
+                }
+            }
+            n = reader.read_line(&mut line) => {
+                match n {
+                    Ok(0) | Err(_) => break,
+                    Ok(_) => line.clear(),
+                }
+            }
         }
     }
 }

@@ -27,6 +27,9 @@
     <!-- Service de premier plan pendant la connexion au PC -->
     <uses-permission android:name="android.permission.FOREGROUND_SERVICE" />
     <uses-permission android:name="android.permission.FOREGROUND_SERVICE_CONNECTED_DEVICE" />
+    <!-- Téléphone-enceinte et téléphone-micro du PC, écran éteint -->
+    <uses-permission android:name="android.permission.FOREGROUND_SERVICE_MEDIA_PLAYBACK" />
+    <uses-permission android:name="android.permission.FOREGROUND_SERVICE_MICROPHONE" />
     <uses-permission android:name="android.permission.POST_NOTIFICATIONS" />
     <!-- Reconnexion automatique après un redémarrage du téléphone -->
     <uses-permission android:name="android.permission.RECEIVE_BOOT_COMPLETED" />
@@ -98,6 +101,12 @@
             android:name=".LinkForegroundService"
             android:exported="false"
             android:foregroundServiceType="connectedDevice" />
+
+        <!-- Le téléphone comme enceinte et/ou micro du PC (écran éteint) -->
+        <service
+            android:name=".PhoneAudioService"
+            android:exported="false"
+            android:foregroundServiceType="mediaPlayback|microphone" />
 
         <!-- Redémarre la connexion toute seule après un reboot ou une mise à
              jour de l'app : plus jamais besoin d'ouvrir Linux Link à la main -->

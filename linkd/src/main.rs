@@ -18,6 +18,7 @@ mod pairing;
 mod protocol;
 mod server;
 mod shortcuts;
+mod speaker;
 mod status;
 mod sync;
 mod volume;

@@ -26,7 +26,7 @@ Once paired, without you touching anything:
 - **A LinuxLink folder syncs in both directions**, plus your standard folders (Downloads, Documents, Pictures) if you want.
 - **Handoff**: send the page you're reading from one device and it opens on the other.
 - **Media and volume**: control the PC's player from a media bubble on your phone, use the physical volume keys, see the track title. Works the other way too.
-- **Your phone becomes a webcam and a microphone** for Zoom, Meet, OBS.
+- **Your phone becomes a webcam, a microphone or a speaker.** The mic and the speaker appear in your PC's sound settings as ordinary devices — "Linux Link" as an input, "Phone (Linux Link)" as an output — so you pick them exactly where you'd pick a headset, in the volume applet or in Zoom/Meet/OBS. Flip the toggle in the app and the phone keeps working with its screen off.
 - **Proximity lock**: walk away with your phone and the PC locks; come back and it unlocks.
 - **Battery level** of the phone, visible from the PC's tray icon.
 - **Several phones at once**, each recognized by its certificate.
@@ -62,11 +62,46 @@ On GNOME the shortcuts are registered as named custom keybindings, so your own s
 
 Reinstall without recompiling with `./install.sh --no-build`. Check on the daemon with `systemctl --user status linkd`.
 
+#### Firewall
+
+If pairing fails with **"PC unreachable"** while both devices sit on the same Wi-Fi, it is almost always the firewall eating the phone's packets. Linux Link needs two UDP ports open on the PC: **47100** (the QUIC connection itself) and **47101** (the discovery beacon that lets the phone find the PC again after an IP change). Allowing mDNS (UDP 5353) as well makes rediscovery faster.
+
+Whether you have a firewall at all depends on the distro:
+
+| Distro | Default firewall | Open the ports |
+|---|---|---|
+| Ubuntu, Zorin, Debian, Mint | none active — nothing to do | — |
+| CachyOS (and some Arch spins) | **ufw, active** | `sudo ufw allow 47100/udp && sudo ufw allow 47101/udp` |
+| Fedora, openSUSE | **firewalld, active** | `sudo firewall-cmd --permanent --add-port=47100/udp --add-port=47101/udp --add-service=mdns && sudo firewall-cmd --reload` |
+| Arch (vanilla) | none unless you added one | — |
+
+`install.sh` detects an active ufw or firewalld and offers to open the ports for you. The symptom of a closed firewall is distinctive: the PC can ping the phone, `linkd` runs fine, the QR scans — and the connection still times out, because the firewall drops the incoming packets silently.
+
+One more pairing gotcha: if the QR ever shows an address like `172.16.x.x`, that was a VPN or container interface. Since v3.1 those are filtered out of the QR automatically; if you're on an older build, disconnect the VPN, generate a new QR, and re-scan.
+
 ### Phone side
 
 Open the `android/` folder in Android Studio (not `android/app`), let Gradle sync, and run it on a real phone — BLE doesn't work in the emulator.
 
 Then pair: click the tray icon → **"Pair a device…"**, scan the QR from the app, accept the "Associate the device" dialog Android shows you. That's it, and that's the last time you'll think about it. The real test is turning the PC off and on again: the "Connected" notification should appear on the phone without you opening anything.
+
+#### Android permissions — what to grant and why
+
+Android guards each capability behind its own permission, so the app asks for them as you enable features rather than all at once. Here is the full list, so nothing surprises you:
+
+| When | Permission | Why |
+|---|---|---|
+| First launch | Notifications | the "Connected" status and transfer notifications |
+| Pairing | Camera | scanning the QR code |
+| Pairing | "Associate the device" (companion dialog) | this is the big one: it lets Android wake the app when the PC appears, without the app running — the whole "never open the app" promise rests on it |
+| Notification mirror | Notification access (special settings page) | reading your notifications to forward them to the PC |
+| Folder sync | All-files access (special settings page) | reading/writing the synced folders |
+| Do Not Disturb sync | DND access (special settings page) | mirroring DND state both ways |
+| Phone as microphone | Microphone | obvious, but note the PC never gets audio unless you flip the toggle |
+| Phone as speaker | none | playback needs no permission |
+| Automatic clipboard | Display over other apps, or Shizuku | Android forbids background clipboard reading; the overlay (or Shizuku) is the workaround |
+
+On Honor/MagicOS and some other OEM Androids, also mark Linux Link as **"protected"** or disable battery optimization for it (Settings → Battery), otherwise the OEM's task killer will quietly stop the background connection and reconnection will feel random.
 
 ### Bits that need a one-time setup
 
@@ -83,6 +118,7 @@ The core is solid on my machines (Zorin PC, Honor phone): pairing, auto-reconnec
 <details>
 <summary><b>Version history</b></summary>
 
+- **v3.1** — the phone joins the PC's sound settings: "Phone (Linux Link)" as an output device (play anything on the PC, hear it on the phone) and the mic usable without opening the webcam screen, both from simple toggles that keep working with the phone's screen off. Also: virtual interfaces (VPN, Docker) are filtered out of the pairing QR, and `install.sh` detects an active ufw/firewalld and offers to open the ports.
 - **v3.0** — reliability, idle cost and desktop integration. Reconnection reacts to network changes and wake-from-suspend instead of waiting for a timer; every polling loop in the daemon is gone, replaced by an internal event bus, and the phone watches folders with inotify rather than walking the filesystem every five minutes. On the desktop: global keyboard shortcuts on GNOME, KDE and Hyprland, a settings window, and "Send to phone" in Nautilus, Nemo, Caja, Dolphin and Thunar, with a per-device submenu when several phones are connected.
 - **v2.0** — the app got a face: launcher icon on Android (adaptive + Material You monochrome), app icon on the PC, a real graphical pairing window instead of the terminal, a custom dark scan screen on the phone, and the multi-distro installer (apt/dnf/pacman, Dolphin action, Hyprland autostart).
 - **v0.52** — the Android app went Material You: dynamic colors from your wallpaper, light/dark, Pixel-style layout.
