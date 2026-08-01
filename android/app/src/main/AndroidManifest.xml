@@ -96,6 +96,15 @@
             android:screenOrientation="landscape"
             android:theme="@android:style/Theme.Material.Light.NoActionBar" />
 
+        <!-- La tablette comme second écran du PC : plein écran, paysage,
+             et on survit aux rotations sans recréer le décodeur -->
+        <activity
+            android:name=".SecondScreenActivity"
+            android:exported="false"
+            android:screenOrientation="sensorLandscape"
+            android:configChanges="orientation|screenSize|smallestScreenSize|screenLayout|keyboardHidden|keyboard|navigation"
+            android:theme="@android:style/Theme.Material.NoActionBar.Fullscreen" />
+
         <!-- Maintient la connexion QUIC tant que le PC est à portée -->
         <service
             android:name=".LinkForegroundService"

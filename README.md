@@ -26,6 +26,7 @@ Once paired, without you touching anything:
 - **A LinuxLink folder syncs in both directions**, plus your standard folders (Downloads, Documents, Pictures) if you want.
 - **Handoff**: send the page you're reading from one device and it opens on the other.
 - **Media and volume**: control the PC's player from a media bubble on your phone, use the physical volume keys, see the track title. Works the other way too.
+- **Your tablet becomes a true second monitor** — extension, not mirroring, like Apple's Sidecar. The PC grows a real extra display that shows up in your display settings; drag windows onto it, the cursor flows across the edge, and the tablet's touch, pen (with pressure) and any attached keyboard act on the PC. H.264 over the same encrypted link, reconnects by itself. Works over Wi-Fi, or over USB via Android's USB tethering.
 - **Your phone becomes a webcam, a microphone or a speaker.** The mic and the speaker appear in your PC's sound settings as ordinary devices — "Linux Link" as an input, "Phone (Linux Link)" as an output — so you pick them exactly where you'd pick a headset, in the volume applet or in Zoom/Meet/OBS. Flip the toggle in the app and the phone keeps working with its screen off.
 - **Proximity lock**: walk away with your phone and the PC locks; come back and it unlocks.
 - **Battery level** of the phone, visible from the PC's tray icon.
@@ -111,6 +112,23 @@ A few features touch parts of the system that need your explicit blessing once:
 - **Automatic phone→PC clipboard**: install [Shizuku](https://shizuku.rikka.app/) on the phone and connect it in the app. Without it, the quick-settings tile and Share menu still work as a manual fallback.
 - **Proximity unlock**: locking works everywhere; unlocking may need a small polkit rule depending on your distro — see [`docs/`](docs/) for the three lines to add.
 
+### Second screen
+
+Tap **"Use as a second screen"** in the app and the PC creates a virtual monitor at the tablet's exact resolution, placed next to your real one. From there it is just a monitor: arrange it in your display settings, drag windows onto it, present from it. Close the app (or walk out of range) and the monitor folds back up; come back and it reconnects on its own.
+
+How the monitor gets created depends on the desktop, and so does the small one-time setup:
+
+| Desktop | Virtual monitor via | One-time setup |
+|---|---|---|
+| GNOME / Zorin (Wayland) | Mutter's own remote-desktop API | none — fully automatic |
+| KDE Plasma (Wayland) | `krfb-virtualmonitor` + screencast portal | install `krfb`; approve the screen picker once (remembered afterwards) |
+| Hyprland / Sway | headless output + `wf-recorder` | install `wf-recorder` |
+| Any desktop on X11 | `xrandr` virtual region + ffmpeg | none |
+
+`install.sh` offers to install the right tools for your setup. On everything except GNOME Wayland, input (touch, pen, keyboard) is injected through `/dev/uinput`; the installer drops a udev rule so your user may open it — if the video shows but touches do nothing, log out and back in once so the rule applies to your session.
+
+Touch behaves like a touchscreen (tap = click, two fingers = scroll), the stylus is a precise pointer with pressure, and a keyboard attached to the tablet types on the PC. Latency is a function of your Wi-Fi; on a sane 5 GHz network expect it to feel like a slightly relaxed wired monitor. For the lowest latency, plug in a USB cable and enable **USB tethering** on the tablet (Settings → Network → Hotspot & tethering): that creates a private wired network between the two devices and Linux Link finds the PC over it automatically — no extra configuration.
+
 ## Where the project stands
 
 The core is solid on my machines (Zorin PC, Honor phone): pairing, auto-reconnect on boot, notifications, clipboard, files, media, webcam. v3.0 is where reliability and idle cost got taken seriously — reconnection is now driven by network events rather than timers, and the daemon no longer polls anything while nothing is happening. That work is fresh, and long-run behaviour across suspend cycles and Wi-Fi changes is exactly what I'd like other people's machines to tell me about. If something breaks for you, open an issue — the logs from `journalctl --user -u linkd` are usually what I'll ask for.
@@ -118,6 +136,7 @@ The core is solid on my machines (Zorin PC, Honor phone): pairing, auto-reconnec
 <details>
 <summary><b>Version history</b></summary>
 
+- **v3.2** — the tablet becomes a real second monitor (Sidecar-style extension): virtual display per compositor (Mutter API on GNOME, headless outputs on Hyprland/Sway, krfb + portal on KDE, xrandr on X11), H.264 low-latency streaming over the existing QUIC link, touch/pen/keyboard injection (Mutter remote API or uinput), automatic reconnection, USB via tethering.
 - **v3.1** — the phone joins the PC's sound settings: "Phone (Linux Link)" as an output device (play anything on the PC, hear it on the phone) and the mic usable without opening the webcam screen, both from simple toggles that keep working with the phone's screen off. Also: virtual interfaces (VPN, Docker) are filtered out of the pairing QR, and `install.sh` detects an active ufw/firewalld and offers to open the ports.
 - **v3.0** — reliability, idle cost and desktop integration. Reconnection reacts to network changes and wake-from-suspend instead of waiting for a timer; every polling loop in the daemon is gone, replaced by an internal event bus, and the phone watches folders with inotify rather than walking the filesystem every five minutes. On the desktop: global keyboard shortcuts on GNOME, KDE and Hyprland, a settings window, and "Send to phone" in Nautilus, Nemo, Caja, Dolphin and Thunar, with a per-device submenu when several phones are connected.
 - **v2.0** — the app got a face: launcher icon on Android (adaptive + Material You monochrome), app icon on the PC, a real graphical pairing window instead of the terminal, a custom dark scan screen on the phone, and the multi-distro installer (apt/dnf/pacman, Dolphin action, Hyprland autostart).

@@ -60,6 +60,30 @@ case "$PKG" in
     pacman) need pactl libpulse ;;
     *)      need pactl pulseaudio-utils ;;
 esac
+# Second screen: encoder tools, per session type and desktop.
+if [ -n "${WAYLAND_DISPLAY:-}" ]; then
+    case "$PKG" in
+        apt)    need gst-launch-1.0 gstreamer1.0-tools
+                need gst-inspect-1.0 gstreamer1.0-plugins-ugly ;;
+        dnf)    need gst-launch-1.0 gstreamer1-plugins-base ;;
+        pacman) need gst-launch-1.0 gstreamer
+                need gst-inspect-1.0 gst-plugins-ugly ;;
+    esac
+    case "${XDG_CURRENT_DESKTOP:-}" in
+        *Hyprland*|*sway*|*Sway*) need wf-recorder wf-recorder ;;
+        *KDE*) need krfb-virtualmonitor krfb ;;
+    esac
+    # PipeWire element for gst (package names differ everywhere).
+    if command -v gst-inspect-1.0 >/dev/null 2>&1 && ! gst-inspect-1.0 --exists pipewiresrc 2>/dev/null; then
+        case "$PKG" in
+            apt)    missing+=("gstreamer1.0-pipewire") ;;
+            dnf)    missing+=("pipewire-gstreamer") ;;
+            pacman) missing+=("gst-plugin-pipewire") ;;
+        esac
+    fi
+else
+    need ffmpeg ffmpeg
+fi
 
 if [ "${#missing[@]}" -gt 0 ]; then
     warn "Missing tools: ${missing[*]}"
@@ -334,6 +358,36 @@ open_firewall() {
     fi
 }
 open_firewall
+
+# ------------------------------------------------------- second screen input
+# The tablet-as-second-screen feature injects mouse/keyboard through
+# /dev/uinput on every desktop except GNOME (which has a D-Bus API for it).
+# Stock permissions are root-only; this udev rule opens the node to the
+# locally logged-in user (uaccess), which is the modern, narrow way to do it.
+setup_uinput() {
+    # GNOME Wayland does not need it — skip the sudo prompt there.
+    case "${XDG_CURRENT_DESKTOP:-}" in
+        *GNOME*|*Zorin*) [ -z "${WAYLAND_DISPLAY:-}" ] || return 0 ;;
+    esac
+    RULE_FILE=/etc/udev/rules.d/60-linuxlink-uinput.rules
+    [ -f "$RULE_FILE" ] && return 0
+    say "Second screen: allowing user access to /dev/uinput (udev rule)"
+    printf '    Install the rule now? [Y/n] '
+    read -r reply
+    case "$reply" in
+        [nN]*) warn "Skipped. The tablet's touch/keyboard will not reach the PC until you run:"
+               warn "  echo 'KERNEL==\"uinput\", SUBSYSTEM==\"misc\", OPTIONS+=\"static_node=uinput\", TAG+=\"uaccess\"' | sudo tee $RULE_FILE"
+               warn "  sudo udevadm control --reload && sudo udevadm trigger /dev/uinput" ;;
+        *)
+            echo 'KERNEL=="uinput", SUBSYSTEM=="misc", OPTIONS+="static_node=uinput", TAG+="uaccess"' | sudo tee "$RULE_FILE" >/dev/null
+            sudo udevadm control --reload 2>/dev/null || true
+            sudo modprobe uinput 2>/dev/null || true
+            sudo udevadm trigger /dev/uinput 2>/dev/null || true
+            say "udev rule installed (log out and back in if the second screen reports no input)."
+            ;;
+    esac
+}
+setup_uinput
 
 # ---------------------------------------------------- keyboard shortcuts
 if [ "$SHORTCUTS" = 1 ]; then

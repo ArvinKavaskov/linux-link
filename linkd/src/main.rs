@@ -4,6 +4,7 @@ mod clipboard;
 mod clipwatch;
 mod control;
 mod discovery;
+mod display;
 mod dnd;
 mod events;
 mod files;

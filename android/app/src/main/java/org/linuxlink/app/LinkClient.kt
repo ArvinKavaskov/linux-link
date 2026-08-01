@@ -200,6 +200,27 @@ class LinkClient(private val identity: Identity) {
         return stream.inputStream
     }
 
+    /** Both directions of a second-screen session, over one QUIC stream. */
+    class DisplayChannel(val input: java.io.InputStream, val output: java.io.OutputStream)
+
+    /**
+     * Asks the PC to grow a virtual monitor of the given size. The PC answers
+     * with one JSON line (`display_ready` or `display_error`) followed by
+     * length-prefixed H.264 access units; we send input events back as JSON
+     * lines on the same stream.
+     */
+    fun openDisplay(width: Int, height: Int, fps: Int): DisplayChannel {
+        val conn = connection ?: error("not connected")
+        val stream = conn.createStream(true)
+        val out = stream.outputStream
+        val header = JSONObject().apply {
+            put("type", "display_start"); put("width", width); put("height", height); put("fps", fps)
+        }
+        out.write((header.toString() + "\n").toByteArray())
+        out.flush()
+        return DisplayChannel(stream.inputStream, out)
+    }
+
     fun openMic(sampleRate: Int, channels: Int): MicWriter {
         val conn = connection ?: error("not connected")
         val stream = conn.createStream(true)

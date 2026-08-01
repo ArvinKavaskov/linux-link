@@ -68,12 +68,22 @@ pub enum Message {
     WebcamStart { width: u32, height: u32 },
     MicStart { sample_rate: u32, channels: u32 },
     SpeakerStart { sample_rate: u32, channels: u32 },
+    DisplayStart {
+        width: u32,
+        height: u32,
+        #[serde(default = "default_fps")]
+        fps: u32,
+    },
     SyncIndex {
         #[serde(default)]
         folder: String,
         files: Vec<SyncEntry>,
     },
     Ok,
+}
+
+fn default_fps() -> u32 {
+    60
 }
 
 #[derive(Serialize, Deserialize, Debug, Clone)]

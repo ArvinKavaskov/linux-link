@@ -254,6 +254,25 @@ async fn handle_stream(
                 let _ = send.finish();
                 return Ok(());
             }
+            Message::DisplayStart { width, height, fps } if trusted => {
+                match crate::display::DisplaySession::start(width, height, fps).await {
+                    Ok(session) => {
+                        stream_display(&mut reader, &mut send, session).await;
+                    }
+                    Err(e) => {
+                        tracing::warn!("second screen: {e:#}");
+                        let reason = serde_json::to_string(&format!("{e:#}")).unwrap_or_default();
+                        let _ = send
+                            .write_all(
+                                format!("{{\"type\":\"display_error\",\"reason\":{reason}}}\n")
+                                    .as_bytes(),
+                            )
+                            .await;
+                    }
+                }
+                let _ = send.finish();
+                return Ok(());
+            }
             Message::SyncIndex { folder, files } if trusted => {
                 if let Err(e) = crate::sync::handle(&mut reader, &mut send, &folder, files).await {
                     tracing::warn!("sync: {e:#}");
@@ -354,6 +373,7 @@ async fn handle_stream(
             | Message::WebcamStart { .. }
             | Message::MicStart { .. }
             | Message::SpeakerStart { .. }
+            | Message::DisplayStart { .. }
             | Message::SyncIndex { .. }
             | Message::FileStart { .. }
             | Message::FilePull { .. }
@@ -418,6 +438,50 @@ async fn stream_speaker(
             }
         }
     }
+}
+
+/// The second-screen pump: H.264 access units go down (length-prefixed),
+/// input events come up (one JSON object per line). Either side going quiet
+/// — pipe EOF, stream reset, tablet gone — ends the session, and
+/// `DisplaySession::shutdown` folds the virtual monitor back up.
+async fn stream_display(
+    reader: &mut BufReader<quinn::RecvStream>,
+    send: &mut quinn::SendStream,
+    mut session: crate::display::DisplaySession,
+) {
+    let ready = format!(
+        "{{\"type\":\"display_ready\",\"width\":{},\"height\":{}}}\n",
+        session.width, session.height
+    );
+    if send.write_all(ready.as_bytes()).await.is_err() {
+        session.shutdown().await;
+        return;
+    }
+    let mut line = String::new();
+    loop {
+        tokio::select! {
+            unit = session.units.recv() => {
+                let Some(unit) = unit else { break };
+                let len = (unit.len() as u32).to_be_bytes();
+                if send.write_all(&len).await.is_err() {
+                    break;
+                }
+                if send.write_all(&unit).await.is_err() {
+                    break;
+                }
+            }
+            n = reader.read_line(&mut line) => {
+                match n {
+                    Ok(0) | Err(_) => break,
+                    Ok(_) => {
+                        session.handle_input(&line).await;
+                        line.clear();
+                    }
+                }
+            }
+        }
+    }
+    session.shutdown().await;
 }
 
 async fn receive_mic(reader: &mut BufReader<quinn::RecvStream>, mut feed: crate::mic::MicFeed) {

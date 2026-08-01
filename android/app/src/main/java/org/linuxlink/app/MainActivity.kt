@@ -241,6 +241,18 @@ class MainActivity : ComponentActivity() {
                             }
                         }
 
+                        Section("Second screen") {
+                            WideButton("🖥 Use as a second screen") {
+                                if (LinkForegroundService.activeClient == null) {
+                                    status = "PC not connected"
+                                } else {
+                                    startActivity(
+                                        Intent(this@MainActivity, SecondScreenActivity::class.java)
+                                    )
+                                }
+                            }
+                        }
+
                         Spacer(Modifier.height(8.dp))
                     }
                 }
