@@ -56,7 +56,11 @@ object ShizukuClipboard {
             return null
         }
         var firstString = true
-        val args = method.parameterTypes.map { t ->
+        // The element type is pinned to Any? on purpose: the branches below
+        // yield String, Int and null, and letting Kotlin infer the type would
+        // produce an intersection (Comparable & Serializable) that a reified
+        // toTypedArray() cannot accept.
+        val args: Array<Any?> = method.parameterTypes.map<Class<*>, Any?> { t ->
             when {
                 t == String::class.java && firstString -> { firstString = false; SHELL_PKG }
                 t == String::class.java -> null
