@@ -250,6 +250,57 @@ impl Tray for LinkTray {
             }
         }
 
+        // The second screen, started from here rather than from the tablet:
+        // the whole point is not having to pick the tablet up first.
+        match connected.len() {
+            0 => items.push(
+                StandardItem {
+                    label: "Use as a second screen".into(),
+                    icon_name: "video-display".into(),
+                    enabled: false,
+                    ..Default::default()
+                }
+                .into(),
+            ),
+            1 => {
+                let fp = connected[0].fingerprint.clone();
+                items.push(
+                    StandardItem {
+                        label: "Use as a second screen".into(),
+                        icon_name: "video-display".into(),
+                        activate: Box::new(move |_: &mut Self| {
+                            linkd(&["screen", "--to", &fp]);
+                        }),
+                        ..Default::default()
+                    }
+                    .into(),
+                );
+            }
+            _ => {
+                let submenu: Vec<MenuItem<Self>> = connected
+                    .iter()
+                    .map(|d| {
+                        let fp = d.fingerprint.clone();
+                        StandardItem {
+                            label: d.name.clone(),
+                            icon_name: "smartphone".into(),
+                            activate: Box::new(move |_: &mut Self| {
+                                linkd(&["screen", "--to", &fp]);
+                            }),
+                            ..Default::default()
+                        }
+                        .into()
+                    })
+                    .collect();
+                items.push(MenuItem::SubMenu(SubMenu {
+                    label: "Use as a second screen".into(),
+                    icon_name: "video-display".into(),
+                    submenu,
+                    ..Default::default()
+                }));
+            }
+        }
+
         items.push(MenuItem::SubMenu(SubMenu {
             label: "Phone media".into(),
             icon_name: "multimedia-player".into(),

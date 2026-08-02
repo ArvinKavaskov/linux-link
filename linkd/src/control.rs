@@ -114,6 +114,16 @@ async fn handle(
                 }
                 Err(e) => tracing::warn!("send-file: {e:#}"),
             }
+        } else if line == "SCREEN" || line.starts_with("SCREEN ") {
+            // "SCREEN" invites every connected tablet, "SCREEN <fingerprint>"
+            // just the one — the same shape as the file commands above.
+            let fp = line["SCREEN".len()..].trim();
+            tracing::info!("🖥 Second screen offered to {}", if fp.is_empty() { "phone(s)" } else { fp });
+            if fp.is_empty() {
+                hub.push(Message::DisplayInvite).await;
+            } else {
+                hub.push_to(fp, Message::DisplayInvite).await;
+            }
         } else if let Some(rest) = line.strip_prefix("LOCKMODE ") {
             prox.set_enabled(rest.trim() == "on");
         } else if let Some(rest) = line.strip_prefix("FORGET ") {
@@ -198,6 +208,14 @@ pub async fn send_file(path: &str, to: Option<&str>) -> Result<()> {
     match to {
         Some(fp) => send_line(&format!("SENDFILETO {fp}\t{path}")).await,
         None => send_line(&format!("SENDFILE {path}")).await,
+    }
+}
+
+/// Offers the second screen to a tablet, or to every connected one.
+pub async fn second_screen(to: Option<&str>) -> Result<()> {
+    match to {
+        Some(fp) => send_line(&format!("SCREEN {fp}")).await,
+        None => send_line("SCREEN").await,
     }
 }
 

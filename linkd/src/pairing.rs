@@ -110,21 +110,6 @@ fn is_virtual_interface(name: &str) -> bool {
     PREFIXES.iter().any(|p| name.starts_with(p))
 }
 
-#[cfg(test)]
-mod tests {
-    use super::is_virtual_interface;
-
-    #[test]
-    fn keeps_real_interfaces_and_drops_virtual_ones() {
-        for real in ["enp7s0", "eth0", "wlan0", "wlp3s0", "eno1", "enx089798f1a6c7"] {
-            assert!(!is_virtual_interface(real), "{real} wrongly filtered");
-        }
-        for fake in ["docker0", "br-a1b2c3", "veth12ab", "virbr0", "tun0", "tap0", "wg0", "tailscale0", "vboxnet0", "ppp0"] {
-            assert!(is_virtual_interface(fake), "{fake} wrongly kept");
-        }
-    }
-}
-
 pub struct Pairing {
     token: Mutex<Option<String>>,
     events: broadcast::Sender<String>,
@@ -159,5 +144,20 @@ impl Pairing {
         let _ = self.events.send(name.to_string());
         // A new device in the trusted list changes the status file.
         crate::events::poke();
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::is_virtual_interface;
+
+    #[test]
+    fn keeps_real_interfaces_and_drops_virtual_ones() {
+        for real in ["enp7s0", "eth0", "wlan0", "wlp3s0", "eno1", "enx089798f1a6c7"] {
+            assert!(!is_virtual_interface(real), "{real} wrongly filtered");
+        }
+        for fake in ["docker0", "br-a1b2c3", "veth12ab", "virbr0", "tun0", "tap0", "wg0", "tailscale0", "vboxnet0", "ppp0"] {
+            assert!(is_virtual_interface(fake), "{fake} wrongly kept");
+        }
     }
 }

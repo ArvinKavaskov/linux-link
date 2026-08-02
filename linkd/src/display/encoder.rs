@@ -277,10 +277,10 @@ impl AnnexBSplitter {
     pub fn push(&mut self, data: &[u8]) -> Vec<Vec<u8>> {
         self.buf.extend_from_slice(data);
         let mut out = Vec::new();
-        loop {
-            // The first start code marks where our current NAL begins…
-            let Some(first) = find_start_code(&self.buf, 0) else { break };
-            // …and the next one marks where it ends.
+        // The first start code marks where our current NAL begins…
+        while let Some(first) = find_start_code(&self.buf, 0) {
+            // …and the next one marks where it ends. Without it the NAL is
+            // still being received, so we stop and wait for more bytes.
             let Some(second) = find_start_code(&self.buf, first + 3) else { break };
             out.push(self.buf[first..second].to_vec());
             self.buf.drain(..second);
@@ -341,8 +341,8 @@ impl AuAssembler {
     pub fn push(&mut self, nal: Vec<u8>) -> Option<Vec<u8>> {
         let t = nal_type(&nal);
         // A new frame, parameter set or AU delimiter after a frame closes the
-        // current access unit.
-        let flush = self.has_vcl && (is_vcl(t) || matches!(t, 6 | 7 | 8 | 9));
+        // current access unit. 6..=9 is SEI, SPS, PPS, AU delimiter.
+        let flush = self.has_vcl && (is_vcl(t) || matches!(t, 6..=9));
         let out = if flush {
             self.has_vcl = false;
             Some(std::mem::take(&mut self.pending))

@@ -59,9 +59,31 @@ pub enum RemoteInput {
     /// Raw finger contact. ph: 0 down, 1 move, 2 up, 3 cancel.
     #[serde(rename = "tc")]
     Touch { id: u32, ph: u8, x: f64, y: f64 },
-    /// Stylus: position, pressure [0,1], tip down.
+    /// Stylus: position, pressure [0,1], tip down, tilt in degrees along each
+    /// axis, eraser end in use, barrel button held, and whether the tool is
+    /// still within the digitizer's range. Everything past `d` is optional, so
+    /// an older tablet build stays on the wire.
     #[serde(rename = "pn")]
-    Pen { x: f64, y: f64, p: f64, d: bool },
+    Pen {
+        x: f64,
+        y: f64,
+        p: f64,
+        d: bool,
+        #[serde(default)]
+        tx: f64,
+        #[serde(default)]
+        ty: f64,
+        #[serde(default)]
+        e: bool,
+        #[serde(default)]
+        bar: bool,
+        #[serde(default = "yes")]
+        prox: bool,
+    },
+}
+
+fn yes() -> bool {
+    true
 }
 
 /// Only one tablet can be the second screen at a time — the virtual outputs
@@ -75,12 +97,18 @@ pub struct DisplaySession {
     encoder: Option<encoder::Encoder>,
     sink: Sink,
     mutter: Option<backends::MutterSession>,
+    /// The session's own clock. Touch gestures are timed against it, and a
+    /// monotonic origin means no wall-clock jump can misfire a long press.
+    started: std::time::Instant,
     _guards: backends::Guards,
 }
 
 enum Sink {
     Mutter,
-    Uinput(input::UinputSink),
+    /// Boxed: the uinput sink carries three virtual devices and their gesture
+    /// state, and the other two variants are empty — inline it and every
+    /// `Sink` in the program would pay for the largest one.
+    Uinput(Box<input::UinputSink>),
     /// Input device creation failed (no uinput permission) — video still runs.
     None,
 }
@@ -124,7 +152,7 @@ impl DisplaySession {
             Sink::Mutter
         } else if let Some((monitor, desktop)) = prepared.geometry {
             match input::UinputSink::new(monitor, desktop) {
-                Ok(s) => Sink::Uinput(s),
+                Ok(s) => Sink::Uinput(Box::new(s)),
                 Err(e) => {
                     tracing::warn!("second screen input disabled: {e:#}");
                     Sink::None
@@ -143,6 +171,7 @@ impl DisplaySession {
             encoder: Some(enc),
             sink,
             mutter: prepared.mutter.take(),
+            started: std::time::Instant::now(),
             _guards: std::mem::take(&mut prepared.guards),
         })
     }
@@ -155,17 +184,37 @@ impl DisplaySession {
                 return;
             }
         };
+        let now = self.now();
         let result = match &mut self.sink {
             Sink::Mutter => match &self.mutter {
                 Some(m) => m.handle(&ev).await,
                 None => Ok(()),
             },
-            Sink::Uinput(s) => s.handle(&ev),
+            Sink::Uinput(s) => s.handle(&ev, now),
             Sink::None => Ok(()),
         };
         if let Err(e) = result {
             tracing::debug!("input injection: {e:#}");
         }
+    }
+
+    /// Called on a timer by the stream loop. Some gestures — a finger held
+    /// perfectly still to mean "right click" — produce no events at all while
+    /// they happen, so they can only be noticed by asking the clock. GNOME is
+    /// exempt: Mutter consumes raw touch natively and does its own gestures.
+    pub fn tick(&mut self) {
+        let now = self.now();
+        if let Sink::Uinput(s) = &mut self.sink {
+            if let Err(e) = s.tick(now) {
+                tracing::debug!("input tick: {e:#}");
+            }
+        }
+    }
+
+    /// Milliseconds since the session started, on a monotonic clock so no
+    /// wall-clock jump can misfire a gesture.
+    fn now(&self) -> u64 {
+        self.started.elapsed().as_millis() as u64
     }
 
     /// Orderly teardown: stop the Mutter session (removes the monitor), kill

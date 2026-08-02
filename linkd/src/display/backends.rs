@@ -254,7 +254,7 @@ impl MutterSession {
                     s.call::<_, _, ()>("NotifyTouchUp", &(id,)).await?;
                 }
             },
-            I::Pen { x, y, p: _, d } => {
+            I::Pen { x, y, d, prox, .. } if prox => {
                 // Mutter's remote API has no tablet-tool path; a pen is a very
                 // precise finger of a mouse.
                 s.call::<_, _, ()>(
@@ -264,6 +264,8 @@ impl MutterSession {
                 .await?;
                 s.call::<_, _, ()>("NotifyPointerButton", &(0x110i32, d)).await?;
             }
+            // Pen out of range: nothing to do, the cursor simply stays put.
+            I::Pen { .. } => {}
         }
         Ok(())
     }

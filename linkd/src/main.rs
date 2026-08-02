@@ -75,6 +75,13 @@ enum Command {
         pick: bool,
     },
     PairLive,
+    /// Asks the tablet to become a second screen, without touching it.
+    Screen {
+        /// Fingerprint of one device; omit it to offer the screen to every
+        /// connected device.
+        #[arg(long)]
+        to: Option<String>,
+    },
     ProximityLock { state: String },
     Battery,
     /// Removes a paired device (full fingerprint or the short form shown by
@@ -108,6 +115,11 @@ async fn main() -> Result<()> {
         }
         Command::SendFile { path, to, pick } => send_file(path, to, pick).await,
         Command::PairLive => control::pair_live().await,
+        Command::Screen { to } => {
+            control::second_screen(to.as_deref()).await?;
+            println!("Second screen offered — accept it on the tablet.");
+            Ok(())
+        }
         Command::ProximityLock { state } => {
             let on = matches!(state.as_str(), "on" | "true" | "1");
             control::proximity_lock(on).await?;
@@ -283,14 +295,16 @@ async fn run(port: u16, no_ble: bool, pairing_mode: bool) -> Result<()> {
     lock::spawn(clipboard.clone(), proximity);
     dnd::spawn_watcher(clipboard.clone(), dnd_sync.clone());
     server::serve(
-        identity,
+        server::Services {
+            identity,
+            pairing,
+            notifier,
+            clipboard,
+            pending: pending_files,
+            battery,
+            dnd: dnd_sync,
+        },
         port,
-        pairing,
-        notifier,
-        clipboard,
-        pending_files,
-        battery,
-        dnd_sync,
         fast_presence,
     )
     .await

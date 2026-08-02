@@ -518,6 +518,7 @@ class LinkForegroundService : Service() {
                 if (msg.optBoolean("clipboard")) receiveClipboardImageFromPc(id, size)
                 else receiveFileFromPc(id, name, size)
             }
+            "display_invite" -> openSecondScreen()
             "dnd" -> applyDndFromPc(msg.optBoolean("on"))
             "phone_media" -> controlPhoneMedia(msg.optString("action"))
             "phone_volume" -> {
@@ -564,6 +565,46 @@ class LinkForegroundService : Service() {
         } catch (e: SecurityException) {
             Log.e(TAG, "media session access denied (grant notification access)", e)
         }
+    }
+
+    /**
+     * The PC offered its second screen.
+     *
+     * Android forbids a background app from opening a window, with two ways
+     * out. "Display over other apps" — which this app already asks for — lifts
+     * the ban outright, and then the screen simply appears, which is the whole
+     * promise: you never pick the tablet up. Without it the offer arrives as a
+     * full-screen-intent notification: the tablet opens straight into the
+     * second screen if it is locked, and shows a one-tap card if it is not.
+     */
+    private fun openSecondScreen() {
+        val open = Intent(this, SecondScreenActivity::class.java)
+            .addFlags(Intent.FLAG_ACTIVITY_NEW_TASK or Intent.FLAG_ACTIVITY_CLEAR_TOP)
+        if (android.provider.Settings.canDrawOverlays(this) &&
+            runCatching { startActivity(open) }.isSuccess
+        ) {
+            Log.d(TAG, "🖥 second screen opened on the PC's request")
+            return
+        }
+
+        val channelId = "link_screen"
+        val nm = getSystemService(NotificationManager::class.java)
+        nm.createNotificationChannel(
+            NotificationChannel(channelId, "Second screen", NotificationManager.IMPORTANCE_HIGH)
+        )
+        val pending = android.app.PendingIntent.getActivity(
+            this, SECOND_SCREEN_NOTIF, open,
+            android.app.PendingIntent.FLAG_IMMUTABLE or android.app.PendingIntent.FLAG_UPDATE_CURRENT
+        )
+        val notif = Notification.Builder(this, channelId)
+            .setContentTitle("Second screen")
+            .setContentText("Your PC is offering its display — tap to open it")
+            .setSmallIcon(android.R.drawable.stat_sys_upload_done)
+            .setContentIntent(pending)
+            .setFullScreenIntent(pending, true)
+            .setAutoCancel(true)
+            .build()
+        nm.notify(SECOND_SCREEN_NOTIF, notif)
     }
 
     private fun showOpenUrlNotification(url: String, title: String) {
@@ -659,6 +700,7 @@ class LinkForegroundService : Service() {
         private const val NOTIF_ID = 1
         private const val NOTIF_MEDIA_ID = 2
         private const val NOTIF_TRANSFER_ID = 3
+        private const val SECOND_SCREEN_NOTIF = 4
         private const val TAG = "LinkForegroundService"
     }
 }

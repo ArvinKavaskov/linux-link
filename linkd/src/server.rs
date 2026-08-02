@@ -12,34 +12,31 @@ use std::net::SocketAddr;
 use std::sync::Arc;
 use tokio::io::{AsyncBufReadExt, AsyncReadExt, AsyncWriteExt, BufReader};
 
-pub async fn serve(
-    identity: Arc<Identity>,
-    port: u16,
-    pairing: Arc<crate::pairing::Pairing>,
-    notifier: Arc<Notifier>,
-    clipboard: Arc<ClipboardHub>,
-    pending: Arc<PendingFiles>,
-    battery: Arc<BatteryStore>,
-    dnd: Arc<DndSync>,
-    fast_presence: bool,
-) -> Result<()> {
-    let endpoint = make_endpoint(&identity, port, fast_presence)?;
+/// Everything a connection needs from the rest of the daemon. It travels as one
+/// handle because every layer below wants the same set, and threading seven
+/// separate `Arc`s through three call sites is noise, not information. Cloning
+/// it clones seven reference counts and nothing else.
+#[derive(Clone)]
+pub struct Services {
+    pub identity: Arc<Identity>,
+    pub pairing: Arc<crate::pairing::Pairing>,
+    pub notifier: Arc<Notifier>,
+    pub clipboard: Arc<ClipboardHub>,
+    pub pending: Arc<PendingFiles>,
+    pub battery: Arc<BatteryStore>,
+    pub dnd: Arc<DndSync>,
+}
+
+pub async fn serve(svc: Services, port: u16, fast_presence: bool) -> Result<()> {
+    let endpoint = make_endpoint(&svc.identity, port, fast_presence)?;
     tracing::info!("QUIC server listening on 0.0.0.0:{port} (ALPN {})", String::from_utf8_lossy(ALPN));
 
     while let Some(incoming) = endpoint.accept().await {
-        let identity = identity.clone();
-        let pairing = pairing.clone();
-        let notifier = notifier.clone();
-        let clipboard = clipboard.clone();
-        let pending = pending.clone();
-        let battery = battery.clone();
-        let dnd = dnd.clone();
+        let svc = svc.clone();
         tokio::spawn(async move {
             match incoming.await {
                 Ok(conn) => {
-                    if let Err(e) =
-                        handle_connection(conn, identity, pairing, notifier, clipboard, pending, battery, dnd).await
-                    {
+                    if let Err(e) = handle_connection(conn, svc).await {
                         tracing::warn!("connection ended with error: {e:#}");
                     }
                 }
@@ -84,16 +81,7 @@ fn make_endpoint(identity: &Identity, port: u16, fast_presence: bool) -> Result<
     Ok(quinn::Endpoint::server(server_config, addr)?)
 }
 
-async fn handle_connection(
-    conn: quinn::Connection,
-    identity: Arc<Identity>,
-    pairing: Arc<crate::pairing::Pairing>,
-    notifier: Arc<Notifier>,
-    clipboard: Arc<ClipboardHub>,
-    pending: Arc<PendingFiles>,
-    battery: Arc<BatteryStore>,
-    dnd: Arc<DndSync>,
-) -> Result<()> {
+async fn handle_connection(conn: quinn::Connection, svc: Services) -> Result<()> {
     let peer_fp = peer_fingerprint(&conn);
     let remote = conn.remote_address();
     tracing::info!("Connection from {remote} (client fingerprint: {})",
@@ -106,29 +94,10 @@ async fn handle_connection(
             | Err(quinn::ConnectionError::ConnectionClosed(_)) => return Ok(()),
             Err(e) => return Err(e.into()),
         };
-        let identity = identity.clone();
-        let pairing = pairing.clone();
-        let notifier = notifier.clone();
-        let clipboard = clipboard.clone();
-        let pending = pending.clone();
-        let battery = battery.clone();
-        let dnd = dnd.clone();
+        let svc = svc.clone();
         let peer_fp = peer_fp.clone();
         tokio::spawn(async move {
-            if let Err(e) = handle_stream(
-                send,
-                recv,
-                &identity,
-                &pairing,
-                peer_fp.as_deref(),
-                &notifier,
-                &clipboard,
-                &pending,
-                &battery,
-                &dnd,
-            )
-            .await
-            {
+            if let Err(e) = handle_stream(send, recv, &svc, peer_fp.as_deref()).await {
                 tracing::debug!("stream ended: {e:#}");
             }
         });
@@ -138,15 +107,10 @@ async fn handle_connection(
 async fn handle_stream(
     mut send: quinn::SendStream,
     recv: quinn::RecvStream,
-    identity: &Identity,
-    pairing: &Arc<crate::pairing::Pairing>,
+    svc: &Services,
     peer_fp: Option<&str>,
-    notifier: &Notifier,
-    clipboard: &Arc<ClipboardHub>,
-    pending: &Arc<PendingFiles>,
-    battery: &Arc<BatteryStore>,
-    dnd: &Arc<DndSync>,
 ) -> Result<()> {
+    let Services { identity, pairing, notifier, clipboard, pending, battery, dnd } = svc;
     let mut reader = BufReader::new(recv);
     let mut line = String::new();
     let mut session_trusted = false;
@@ -458,8 +422,16 @@ async fn stream_display(
         return;
     }
     let mut line = String::new();
+    // Gesture clock. A finger resting still sends nothing, so the long press
+    // is only ever noticed here. 50 ms is a tenth of the press threshold:
+    // imperceptible lag, negligible cost.
+    let mut gestures = tokio::time::interval(std::time::Duration::from_millis(50));
+    gestures.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
     loop {
         tokio::select! {
+            _ = gestures.tick() => {
+                session.tick();
+            }
             unit = session.units.recv() => {
                 let Some(unit) = unit else { break };
                 let len = (unit.len() as u32).to_be_bytes();
