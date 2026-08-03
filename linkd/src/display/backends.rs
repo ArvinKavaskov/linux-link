@@ -107,7 +107,7 @@ pub async fn prepare(comp: Compositor, width: u32, height: u32, fps: u32) -> Res
         Compositor::Hyprland => prepare_hyprland(width, height, fps).await,
         Compositor::Sway => prepare_sway(width, height, fps).await,
         Compositor::KdeWayland => prepare_kde(width, height).await,
-        Compositor::X11 => prepare_x11(width, height),
+        Compositor::X11 => prepare_x11(width, height).await,
     }
 }
 
@@ -479,11 +479,95 @@ fn save_restore_token(token: &str) {
 
 const X11_NAME: &str = "LinuxLink";
 
-fn prepare_x11(width: u32, height: u32) -> Result<PreparedDisplay> {
-    let query = std::process::Command::new("xrandr").arg("--query").output().context("xrandr")?;
-    let query = String::from_utf8_lossy(&query.stdout).to_string();
+async fn prepare_x11(width: u32, height: u32) -> Result<PreparedDisplay> {
+    let query = run_sync(&["xrandr", "--query"])?;
     let (cur_w, cur_h) = parse_x11_screen_size(&query).context("parsing xrandr output")?;
 
+    // A dead connector first. A mode forced onto a real output gets a real
+    // CRTC, and desktop environments treat that as a monitor to arrange, not
+    // an anomaly to repair. The enlarged-framebuffer trick below is the one
+    // GNOME's window manager reverts within a second of us setting it up.
+    for out in parse_x11_disconnected(&query) {
+        match try_x11_forced_output(&out, width, height, cur_w, cur_h).await {
+            Ok(p) => {
+                tracing::info!("virtual monitor on the unused {out} port");
+                return Ok(p);
+            }
+            Err(e) => tracing::info!("no virtual mode on {out} ({e:#})"),
+        }
+    }
+    try_x11_big_framebuffer(width, height, cur_w, cur_h).await
+}
+
+/// Forces a mode onto a disconnected output. The driver scans out to nobody,
+/// but the region is real: it has a CRTC, the desktop lists it as a monitor,
+/// and x11grab can read it. This is the sturdy path on X11.
+async fn try_x11_forced_output(
+    out: &str,
+    width: u32,
+    height: u32,
+    cur_w: u32,
+    cur_h: u32,
+) -> Result<PreparedDisplay> {
+    let mode = format!("{X11_NAME}-{width}x{height}");
+    let m = cvt_rb_modeline(width, height);
+    let mut newmode: Vec<String> =
+        vec!["xrandr".into(), "--newmode".into(), mode.clone(), format!("{:.2}", m.clock_mhz)];
+    newmode.extend(
+        [m.hd, m.hss, m.hse, m.htotal, m.vd, m.vss, m.vse, m.vtotal].map(|v| v.to_string()),
+    );
+    newmode.push("+hsync".into());
+    newmode.push("-vsync".into());
+    // A leftover mode from a crashed session is fine to reuse, so a failure
+    // here is ignored; any real problem resurfaces at --addmode.
+    let _ = run_sync_owned(&newmode);
+    run_sync(&["xrandr", "--addmode", out, &mode])?;
+
+    // Guards go in *before* the mode is switched on: whatever happens next,
+    // the session's end puts the outputs back the way they were.
+    let mut guards = Guards::default();
+    guards.commands.push(vec!["xrandr".into(), "--output".into(), out.into(), "--off".into()]);
+    guards.commands.push(vec!["xrandr".into(), "--delmode".into(), out.into(), mode.clone()]);
+    guards.commands.push(vec!["xrandr".into(), "--rmmode".into(), mode.clone()]);
+    guards.commands.push(vec!["xrandr".into(), "--fb".into(), format!("{cur_w}x{cur_h}")]);
+
+    run_sync(&["xrandr", "--output", out, "--mode", &mode, "--pos", &format!("{cur_w}x0")])?;
+
+    // The desktop gets a moment to notice the new monitor and arrange it —
+    // it may well move it — and then the capture targets wherever the
+    // monitor actually ended up, not where we asked for it to be.
+    tokio::time::sleep(std::time::Duration::from_millis(800)).await;
+    let query = run_sync(&["xrandr", "--query"])?;
+    let (x, y) = parse_x11_output_pos(&query, out, width, height)
+        .ok_or_else(|| anyhow::anyhow!("{out} did not keep the {width}x{height} mode"))?;
+
+    let (dw, dh) =
+        parse_x11_screen_size(&query).unwrap_or((cur_w + width, cur_h.max(height)));
+    let monitor =
+        Rect { x: f64::from(x), y: f64::from(y), w: f64::from(width), h: f64::from(height) };
+    let desktop = Rect { x: 0.0, y: 0.0, w: f64::from(dw), h: f64::from(dh) };
+
+    Ok(PreparedDisplay {
+        source: CaptureSource::X11Region { x, y, width, height },
+        geometry: Some((monitor, desktop)),
+        mutter: None,
+        guards,
+        width,
+        height,
+    })
+}
+
+/// The fallback when no output can host a mode: enlarge the framebuffer and
+/// declare a fake RandR monitor over the new region. Plain window managers
+/// leave it alone; full desktops rarely do, which is why the result is
+/// verified instead of assumed — streaming a region the desktop has already
+/// taken back just shows the tablet an error from ffmpeg.
+async fn try_x11_big_framebuffer(
+    width: u32,
+    height: u32,
+    cur_w: u32,
+    cur_h: u32,
+) -> Result<PreparedDisplay> {
     let new_w = cur_w + width;
     let new_h = cur_h.max(height);
     let x_off = cur_w;
@@ -492,6 +576,9 @@ fn prepare_x11(width: u32, height: u32) -> Result<PreparedDisplay> {
     let mm_h = height * 254 / 960;
 
     run_sync(&["xrandr", "--fb", &format!("{new_w}x{new_h}")])?;
+    let mut guards = Guards::default();
+    guards.commands.push(vec!["xrandr".into(), "--delmonitor".into(), X11_NAME.into()]);
+    guards.commands.push(vec!["xrandr".into(), "--fb".into(), format!("{cur_w}x{cur_h}")]);
     run_sync(&[
         "xrandr",
         "--setmonitor",
@@ -500,9 +587,16 @@ fn prepare_x11(width: u32, height: u32) -> Result<PreparedDisplay> {
         "none",
     ])?;
 
-    let mut guards = Guards::default();
-    guards.commands.push(vec!["xrandr".into(), "--delmonitor".into(), X11_NAME.into()]);
-    guards.commands.push(vec!["xrandr".into(), "--fb".into(), format!("{cur_w}x{cur_h}")]);
+    tokio::time::sleep(std::time::Duration::from_millis(800)).await;
+    let (w_now, _) = parse_x11_screen_size(&run_sync(&["xrandr", "--query"])?)
+        .context("re-reading the screen size")?;
+    if w_now < new_w {
+        anyhow::bail!(
+            "the desktop keeps undoing the enlarged framebuffer (it went straight back to \
+             {w_now}px wide) — GNOME on X11 does this. Log into the Wayland session instead \
+             (GNOME there has a native virtual monitor), or free up one video port on the PC"
+        );
+    }
 
     let monitor = Rect { x: f64::from(x_off), y: 0.0, w: f64::from(width), h: f64::from(height) };
     let desktop = Rect { x: 0.0, y: 0.0, w: f64::from(new_w), h: f64::from(new_h) };
@@ -515,6 +609,89 @@ fn prepare_x11(width: u32, height: u32) -> Result<PreparedDisplay> {
         width,
         height,
     })
+}
+
+struct Modeline {
+    clock_mhz: f64,
+    hd: u32,
+    hss: u32,
+    hse: u32,
+    htotal: u32,
+    vd: u32,
+    vss: u32,
+    vse: u32,
+    vtotal: u32,
+}
+
+/// CVT 1.1 reduced-blanking timings, the same maths as `cvt -r`. Computed
+/// here rather than shelling out because `cvt` ships in a different package
+/// on every distro, and a virtual output only needs the numbers to look
+/// plausible to the driver anyway.
+fn cvt_rb_modeline(width: u32, height: u32) -> Modeline {
+    const RB_H_BLANK: u32 = 160; // fp 48 + sync 32 + bp 80
+    const RB_MIN_VBLANK_US: f64 = 460.0;
+    const V_FP: u32 = 3;
+    const V_MIN_BP: u32 = 6;
+
+    let vsync = match (width * 3 == height * 4, width * 9 == height * 16, width * 10 == height * 16, width * 4 == height * 5) {
+        (true, ..) => 4,
+        (_, true, ..) => 5,
+        (_, _, true, _) => 6,
+        (.., true) => 7,
+        _ => 10,
+    };
+
+    let htotal = width + RB_H_BLANK;
+    // Estimate the line period from the frame time minus the fixed vertical
+    // blank, then find how many blank lines fit in that minimum blank time.
+    let h_period_us = (1_000_000.0 / 60.0 - RB_MIN_VBLANK_US) / f64::from(height);
+    let vbi = ((RB_MIN_VBLANK_US / h_period_us).floor() as u32 + 1).max(V_FP + vsync + V_MIN_BP);
+    let vtotal = height + vbi;
+    // Pixel clock, rounded down to the 0.25 MHz granularity of the spec.
+    let clock_mhz = (60.0 * f64::from(htotal) * f64::from(vtotal) / 250_000.0).floor() * 0.25;
+
+    Modeline {
+        clock_mhz,
+        hd: width,
+        hss: width + 48,
+        hse: width + 80,
+        htotal,
+        vd: height,
+        vss: height + V_FP,
+        vse: height + V_FP + vsync,
+        vtotal,
+    }
+}
+
+/// Output names that are disconnected *and* idle — a forced mode from a
+/// previous session leaves the output "disconnected" but with a geometry,
+/// and that one is in use, not free.
+fn parse_x11_disconnected(query: &str) -> Vec<String> {
+    query
+        .lines()
+        .filter_map(|l| {
+            let mut t = l.split_whitespace();
+            let name = t.next()?;
+            if t.next()? != "disconnected" {
+                return None;
+            }
+            match t.next() {
+                Some(tok) if tok.contains('+') && tok.contains('x') => None, // active
+                _ => Some(name.to_string()),
+            }
+        })
+        .collect()
+}
+
+/// Where an output actually is: the `WxH+X+Y` token on its xrandr line,
+/// accepted only if the size is the one we asked for.
+fn parse_x11_output_pos(query: &str, out: &str, width: u32, height: u32) -> Option<(u32, u32)> {
+    let line = query.lines().find(|l| l.starts_with(&format!("{out} ")))?;
+    let geom = line.split_whitespace().find(|t| t.starts_with(&format!("{width}x{height}+")))?;
+    let mut plus = geom.split('+').skip(1);
+    let x: u32 = plus.next()?.parse().ok()?;
+    let y: u32 = plus.next()?.parse().ok()?;
+    Some((x, y))
 }
 
 /// "Screen 0: minimum 320 x 200, current 1920 x 1080, maximum 16384 x 16384"
@@ -543,6 +720,11 @@ async fn run(cmd: &[&str]) -> Result<String> {
         anyhow::bail!("{} failed: {}", cmd.join(" "), String::from_utf8_lossy(&out.stderr).trim());
     }
     Ok(String::from_utf8_lossy(&out.stdout).to_string())
+}
+
+fn run_sync_owned(cmd: &[String]) -> Result<String> {
+    let v: Vec<&str> = cmd.iter().map(String::as_str).collect();
+    run_sync(&v)
 }
 
 fn run_sync(cmd: &[&str]) -> Result<String> {
@@ -620,6 +802,47 @@ fn union_rects(rects: impl Iterator<Item = Rect>) -> Rect {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn reduced_blanking_matches_the_cvt_tool() {
+        // `cvt -r 1920 1080 60`:
+        // Modeline "1920x1080R" 138.50 1920 1968 2000 2080 1080 1083 1088 1111
+        let m = cvt_rb_modeline(1920, 1080);
+        assert_eq!(
+            (m.clock_mhz, m.hss, m.hse, m.htotal, m.vss, m.vse, m.vtotal),
+            (138.50, 1968, 2000, 2080, 1083, 1088, 1111)
+        );
+        // `cvt -r 2560 1440 60`:
+        // Modeline "2560x1440R" 241.50 2560 2608 2640 2720 1440 1443 1448 1481
+        let m = cvt_rb_modeline(2560, 1440);
+        assert_eq!(
+            (m.clock_mhz, m.hss, m.hse, m.htotal, m.vss, m.vse, m.vtotal),
+            (241.50, 2608, 2640, 2720, 1443, 1448, 1481)
+        );
+    }
+
+    #[test]
+    fn finds_free_outputs_and_skips_busy_ones() {
+        let q = "\
+Screen 0: minimum 320 x 200, current 1920 x 1080, maximum 16384 x 16384
+eDP-1 connected (normal left inverted right x axis y axis)
+HDMI-1 disconnected (normal left inverted right x axis y axis)
+HDMI-1-0 connected primary 1920x1080+0+0 (normal left inverted right) 598mm x 336mm
+DP-2 disconnected 1696x1200+1920+0 (normal left inverted right) 0mm x 0mm";
+        // HDMI-1 is free; DP-2 is disconnected but carries a forced mode.
+        assert_eq!(parse_x11_disconnected(q), vec!["HDMI-1".to_string()]);
+    }
+
+    #[test]
+    fn reads_an_output_position_even_with_the_primary_flag() {
+        let q = "\
+HDMI-1-0 connected primary 1920x1080+0+0 (normal left inverted right) 598mm x 336mm
+HDMI-1 disconnected 1696x1200+1920+0 (normal left inverted right) 0mm x 0mm";
+        assert_eq!(parse_x11_output_pos(q, "HDMI-1", 1696, 1200), Some((1920, 0)));
+        assert_eq!(parse_x11_output_pos(q, "HDMI-1-0", 1920, 1080), Some((0, 0)));
+        // The size must be the one we asked for, or the position is useless.
+        assert_eq!(parse_x11_output_pos(q, "HDMI-1", 1600, 1200), None);
+    }
 
     #[test]
     fn parses_the_xrandr_screen_line() {

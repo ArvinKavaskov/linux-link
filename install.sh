@@ -147,7 +147,10 @@ say "systemd service — the daemon starts at every session login"
 mkdir -p "$SYSTEMD_DIR"
 install -m644 systemd/linkd.service "$SYSTEMD_DIR/linkd.service"
 systemctl --user daemon-reload
-systemctl --user enable --now linkd
+# reenable, not enable: the unit's WantedBy changed in v4 (default.target →
+# graphical-session.target) and reenable is what drops the stale symlink.
+systemctl --user reenable linkd
+systemctl --user restart linkd
 
 say "System tray app (menu + automatic launch)"
 mkdir -p "$APP_DIR" "$AUTOSTART_DIR"

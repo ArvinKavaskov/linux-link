@@ -9,7 +9,14 @@
 
 [Unit]
 Description=Linux Link daemon (Linux <-> Android continuity)
-After=network-online.target bluetooth.target
+After=network-online.target bluetooth.target graphical-session.target
+# The graphical session is where DISPLAY and the XDG variables live. Started
+# any earlier, the daemon runs blind: D-Bus still works (it only needs
+# XDG_RUNTIME_DIR), so everything *seems* fine until the first feature that
+# talks to the display server — the second screen — fails with an empty
+# environment. Binding to the session also stops the daemon when the session
+# ends, instead of leaving it talking to a dead display.
+PartOf=graphical-session.target
 # Five restarts in a minute is a real bug, not a blip — but giving up after
 # the default three would be far too easy on a slow login.
 StartLimitBurst=5
@@ -27,4 +34,4 @@ Nice=5
 IOSchedulingClass=idle
 
 [Install]
-WantedBy=default.target
+WantedBy=graphical-session.target
