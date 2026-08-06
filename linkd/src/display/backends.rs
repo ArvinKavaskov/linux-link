@@ -480,6 +480,22 @@ fn save_restore_token(token: &str) {
 const X11_NAME: &str = "LinuxLink";
 
 async fn prepare_x11(width: u32, height: u32) -> Result<PreparedDisplay> {
+    // GNOME is a lost cause on X11, verified on real hardware: Mutter undoes
+    // an enlarged framebuffer within a second, and it ignores an output it
+    // believes disconnected even with a mode forced onto it — the region
+    // exists, the capture works, and nothing is ever drawn there, so the
+    // tablet shows black while the attempt visibly disturbs the desktop.
+    // Refusing up front turns that mess into one clear sentence on the
+    // tablet, pointing at the session where this actually works.
+    let desktop = std::env::var("XDG_CURRENT_DESKTOP").unwrap_or_default().to_lowercase();
+    if desktop.contains("gnome") || desktop.contains("zorin") {
+        anyhow::bail!(
+            "GNOME on X11 cannot host a virtual monitor. Log out and pick the Wayland \
+             session (gear icon on the login screen) — there Linux Link asks GNOME \
+             itself for a real virtual monitor, and the touch input comes for free"
+        );
+    }
+
     let query = run_sync(&["xrandr", "--query"])?;
     let (cur_w, cur_h) = parse_x11_screen_size(&query).context("parsing xrandr output")?;
 

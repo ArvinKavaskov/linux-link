@@ -123,7 +123,9 @@ How the monitor gets created depends on the desktop, and so does the small one-t
 | GNOME / Zorin (Wayland) | Mutter's own remote-desktop API | none — fully automatic |
 | KDE Plasma (Wayland) | `krfb-virtualmonitor` + screencast portal | install `krfb`; approve the screen picker once (remembered afterwards) |
 | Hyprland / Sway | headless output + `wf-recorder` | install `wf-recorder` |
-| Any desktop on X11 | `xrandr` virtual region + ffmpeg | none |
+| Most desktops on X11 | forced mode on a spare port, or `xrandr` virtual region + ffmpeg | none |
+
+One exception: **GNOME on X11** cannot host a virtual monitor — its window manager reverts an enlarged framebuffer and ignores outputs it believes disconnected, so Linux Link refuses cleanly and tells you the fix: log out and pick the Wayland session (the gear icon on the login screen), where the second screen works through GNOME's own API, one line up in the table.
 
 `install.sh` offers to install the right tools for your setup. On everything except GNOME Wayland, input (touch, pen, keyboard) is injected through `/dev/uinput`; the installer drops a udev rule so your user may open it — if the video shows but touches do nothing, log out and back in once so the rule applies to your session.
 
