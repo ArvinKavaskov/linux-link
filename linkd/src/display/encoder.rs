@@ -86,9 +86,29 @@ async fn pump(mut stdout: tokio::process::ChildStdout, tx: mpsc::Sender<Vec<u8>>
     let mut assembler = AuAssembler::new();
     let mut buf = vec![0u8; 64 * 1024];
     loop {
-        let n = match stdout.read(&mut buf).await {
-            Ok(0) | Err(_) => break,
-            Ok(n) => n,
+        // Both the splitter and the assembler close a unit only when the
+        // *next* one begins, which is fine for a constant-rate source and
+        // fatal for a damage-driven one: a Mutter screencast of a still
+        // desktop sends one frame and stops, and that frame would sit in the
+        // buffers forever while the tablet shows black. A short idle beat
+        // flushes whatever is complete.
+        let read = tokio::time::timeout(
+            std::time::Duration::from_millis(40),
+            stdout.read(&mut buf),
+        )
+        .await;
+        let n = match read {
+            Err(_idle) => {
+                let tail = splitter.finish().and_then(|nal| assembler.push(nal));
+                for au in tail.into_iter().chain(assembler.finish()) {
+                    if tx.try_send(au).is_err() && tx.is_closed() {
+                        return;
+                    }
+                }
+                continue;
+            }
+            Ok(Ok(0)) | Ok(Err(_)) => break,
+            Ok(Ok(n)) => n,
         };
         for nal in splitter.push(&buf[..n]) {
             if let Some(au) = assembler.push(nal) {
@@ -326,6 +346,19 @@ fn is_vcl(t: u8) -> bool {
     (1..=5).contains(&t)
 }
 
+/// Whether a VCL NAL is the *first* slice of its picture. Encoders in
+/// low-latency tunes split one frame into several slice NALs, and only the
+/// slice with `first_mb_in_slice == 0` starts a new picture. That field is
+/// the first Exp-Golomb value after the NAL header, and ue(v) encodes zero
+/// as a single 1 bit — so one bit test replaces a bitstream parser.
+fn starts_new_picture(nal: &[u8]) -> bool {
+    let offset = if nal.len() > 3 && nal[2] == 1 { 3 } else { 4 };
+    match nal.get(offset + 1) {
+        Some(b) => b & 0x80 != 0,
+        None => true,
+    }
+}
+
 /// Groups NALs into access units: parameter sets and SEI attach to the frame
 /// that follows them, so every emitted unit decodes on its own terms.
 pub struct AuAssembler {
@@ -340,9 +373,13 @@ impl AuAssembler {
 
     pub fn push(&mut self, nal: Vec<u8>) -> Option<Vec<u8>> {
         let t = nal_type(&nal);
-        // A new frame, parameter set or AU delimiter after a frame closes the
-        // current access unit. 6..=9 is SEI, SPS, PPS, AU delimiter.
-        let flush = self.has_vcl && (is_vcl(t) || matches!(t, 6..=9));
+        // A new picture, parameter set or AU delimiter after a frame closes
+        // the current access unit. 6..=9 is SEI, SPS, PPS, AU delimiter. A
+        // slice that *continues* the current picture closes nothing: sliced
+        // low-latency encoders send one frame as several NALs, and a decoder
+        // fed half a frame as if it were whole shows garbage or nothing.
+        let flush = self.has_vcl
+            && ((is_vcl(t) && starts_new_picture(&nal)) || matches!(t, 6..=9));
         let out = if flush {
             self.has_vcl = false;
             Some(std::mem::take(&mut self.pending))
@@ -419,6 +456,36 @@ mod tests {
         assert!(units[0].len() > 900 / 8); // contains the IDR too
         assert_eq!(nal_type(&units[1]), 1);
         assert_eq!(nal_type(&units[2]), 1);
+    }
+
+    #[test]
+    fn sliced_frames_stay_one_access_unit() {
+        // Low-latency encoders cut one picture into several slice NALs; only
+        // the slice with first_mb_in_slice == 0 (leading ue(v) bit set) opens
+        // a new picture, and the rest must stay in the same access unit — a
+        // decoder fed half a frame as if it were whole shows garbage.
+        let mut asm = AuAssembler::new();
+        let mut units = Vec::new();
+        for n in [
+            nal(0x67, 8),
+            nal(0x68, 4),
+            vec![0, 0, 0, 1, 0x65, 0x88, 0xAA], // IDR, first slice
+            vec![0, 0, 0, 1, 0x65, 0x08, 0xAA], // IDR, continuation slice
+            vec![0, 0, 0, 1, 0x41, 0x9A, 0xAA], // next picture, first slice
+            vec![0, 0, 0, 1, 0x41, 0x1A, 0xAA], // its continuation
+        ] {
+            if let Some(au) = asm.push(n) {
+                units.push(au);
+            }
+        }
+        if let Some(au) = asm.finish() {
+            units.push(au);
+        }
+        assert_eq!(units.len(), 2);
+        // Both IDR slices in the first unit…
+        assert_eq!(units[0].windows(5).filter(|w| *w == [0, 0, 0, 1, 0x65]).count(), 2);
+        // …and both P slices in the second.
+        assert_eq!(units[1].windows(5).filter(|w| *w == [0, 0, 0, 1, 0x41]).count(), 2);
     }
 
     #[test]
