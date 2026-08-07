@@ -11,19 +11,16 @@
 //! matters because "the service will not start" is exactly when someone opens
 //! the settings.
 
-use eframe::egui::{self, Color32, Rounding, Vec2};
+use eframe::egui::{self, Vec2};
 use serde::{Deserialize, Serialize};
+
+#[path = "../ui_theme.rs"]
+mod theme;
+use theme::Palette;
 use std::io::{BufRead, BufReader, Write};
 use std::os::unix::net::UnixStream;
 use std::path::PathBuf;
 use std::time::{Duration, Instant};
-
-const BG: Color32 = Color32::from_rgb(0x12, 0x10, 0x18);
-const CARD: Color32 = Color32::from_rgb(0x1B, 0x18, 0x24);
-const ACCENT: Color32 = Color32::from_rgb(0x9E, 0x7B, 0xFF);
-const OK_GREEN: Color32 = Color32::from_rgb(0x4C, 0xC9, 0x6E);
-const WARN_RED: Color32 = Color32::from_rgb(0xE5, 0x6B, 0x6B);
-const TEXT_DIM: Color32 = Color32::from_rgb(0xA8, 0xA2, 0xB8);
 
 /// How often the window re-reads the world. Nothing here is expensive, but
 /// there is no reason to stat four files sixty times a second.
@@ -145,6 +142,21 @@ fn forget_device(fingerprint: &str) -> Result<String, String> {
     let json = serde_json::to_string_pretty(&peers).map_err(|e| e.to_string())?;
     std::fs::write(config_dir().join("peers.json"), json).map_err(|e| e.to_string())?;
     Ok(removed.name)
+}
+
+
+/// Restarts the daemon for the user, so nobody has to know what systemd is.
+/// `systemctl --user` needs no privileges for a user unit.
+fn restart_service() -> Result<(), String> {
+    let out = std::process::Command::new("systemctl")
+        .args(["--user", "restart", "linkd"])
+        .output()
+        .map_err(|e| format!("cannot run systemctl: {e}"))?;
+    if out.status.success() {
+        Ok(())
+    } else {
+        Err(String::from_utf8_lossy(&out.stderr).trim().to_string())
+    }
 }
 
 /// The proximity lock lives in the daemon's memory as well as on disk, so it
@@ -283,23 +295,6 @@ impl SettingsApp {
     fn say(&mut self, msg: impl Into<String>, ok: bool) {
         self.toast = Some((msg.into(), ok));
     }
-
-    fn card<R>(&self, ui: &mut egui::Ui, add: impl FnOnce(&mut egui::Ui) -> R) {
-        egui::Frame::none()
-            .fill(CARD)
-            .rounding(Rounding::same(14.0))
-            .inner_margin(16.0)
-            .show(ui, |ui| {
-                ui.set_width(ui.available_width());
-                add(ui);
-            });
-        ui.add_space(12.0);
-    }
-
-    fn heading(ui: &mut egui::Ui, text: &str) {
-        ui.label(egui::RichText::new(text).size(13.0).strong().color(TEXT_DIM));
-        ui.add_space(8.0);
-    }
 }
 
 impl eframe::App for SettingsApp {
@@ -309,75 +304,88 @@ impl eframe::App for SettingsApp {
         }
         ctx.request_repaint_after(REFRESH);
 
+        let p = theme::frame_palette(ctx);
         egui::CentralPanel::default()
-            .frame(egui::Frame::none().fill(BG).inner_margin(20.0))
+            .frame(egui::Frame::none().fill(p.bg).inner_margin(20.0))
             .show(ctx, |ui| {
                 egui::ScrollArea::vertical().show(ui, |ui| {
-                    self.header(ui);
-                    self.devices_card(ui);
-                    self.behaviour_card(ui);
-                    self.shortcuts_card(ui);
-                    self.footer(ui);
+                    self.header(ui, &p);
+                    self.devices_card(ui, &p);
+                    self.behaviour_card(ui, &p);
+                    self.shortcuts_card(ui, &p);
+                    self.footer(ui, &p);
                 });
             });
     }
 }
 
 impl SettingsApp {
-    fn header(&mut self, ui: &mut egui::Ui) {
+    /// Identity on the left, one truthful status pill on the right. If the
+    /// service is down, the card below carries the fix as a button — nobody
+    /// should have to type a systemctl command to use their own settings.
+    fn header(&mut self, ui: &mut egui::Ui, p: &Palette) {
         ui.horizontal(|ui| {
             if let Some(logo) = &self.logo {
                 ui.add(
                     egui::Image::new(logo)
                         .fit_to_exact_size(Vec2::splat(44.0))
-                        .rounding(Rounding::same(11.0)),
+                        .rounding(egui::Rounding::same(12.0)),
                 );
             }
             ui.add_space(8.0);
             ui.vertical(|ui| {
-                ui.label(
-                    egui::RichText::new("Linux Link").size(21.0).strong().color(Color32::WHITE),
-                );
-                let (text, colour) = if !self.world.alive {
-                    ("Service stopped".to_string(), WARN_RED)
-                } else if self.world.status.device_count > 0 {
-                    let bat = if self.world.status.battery >= 0 {
-                        format!(
-                            " · {}%{}",
-                            self.world.status.battery,
-                            if self.world.status.charging { " ⚡" } else { "" }
-                        )
+                ui.label(egui::RichText::new("Linux Link").size(21.0).strong().color(p.text));
+                ui.horizontal(|ui| {
+                    let (text, colour, on) = if !self.world.alive {
+                        ("Service stopped".to_string(), p.warn, false)
+                    } else if self.world.status.device_count > 0 {
+                        let bat = if self.world.status.battery >= 0 {
+                            format!(
+                                " · {}%{}",
+                                self.world.status.battery,
+                                if self.world.status.charging { " ⚡" } else { "" }
+                            )
+                        } else {
+                            String::new()
+                        };
+                        (format!("Connected{bat}"), p.ok, true)
                     } else {
-                        String::new()
+                        ("Waiting for a phone".to_string(), p.dim, false)
                     };
-                    (format!("{} connected{bat}", self.world.status.device_count), OK_GREEN)
-                } else {
-                    ("Waiting for a phone".to_string(), TEXT_DIM)
-                };
-                ui.label(egui::RichText::new(text).size(13.0).color(colour));
+                    theme::status_dot(ui, colour, on);
+                    ui.label(egui::RichText::new(text).size(13.0).color(colour));
+                });
             });
         });
         ui.add_space(16.0);
 
         if !self.world.alive {
-            self.card(ui, |ui| {
+            let mut restart = false;
+            theme::card(ui, p, |ui| {
                 ui.label(
-                    egui::RichText::new("The linkd service is not answering.")
-                        .size(13.0)
-                        .color(Color32::WHITE),
+                    egui::RichText::new("The Linux Link service is not running.")
+                        .size(14.0)
+                        .color(p.text),
                 );
-                ui.add_space(4.0);
-                ui.label(
-                    egui::RichText::new("systemctl --user restart linkd")
-                        .size(12.0)
-                        .monospace()
-                        .color(TEXT_DIM),
-                );
+                theme::hint(ui, p, "Pairing, sync and the second screen need it.");
+                ui.add_space(10.0);
+                if theme::primary_button(ui, p, "Restart the service").clicked() {
+                    restart = true;
+                }
             });
+            if restart {
+                match restart_service() {
+                    Ok(()) => {
+                        self.say("Service restarting…", true);
+                        self.refresh();
+                    }
+                    Err(e) => self.say(e, false),
+                }
+            }
         }
     }
 
-    fn devices_card(&mut self, ui: &mut egui::Ui) {
+    fn devices_card(&mut self, ui: &mut egui::Ui, p: &Palette) {
         // Collected before the closure so the borrow checker is happy about
         // `self` being used inside it.
         let peers = self.world.peers.peers.clone();
@@ -397,67 +405,56 @@ impl SettingsApp {
         let mut cancel = false;
         let mut pair = false;
 
-        egui::Frame::none()
-            .fill(CARD)
-            .rounding(Rounding::same(14.0))
-            .inner_margin(16.0)
-            .show(ui, |ui| {
-                ui.set_width(ui.available_width());
-                Self::heading(ui, "PAIRED DEVICES");
-                if peers.is_empty() {
-                    ui.label(
-                        egui::RichText::new("No device yet. Pair your phone to get started.")
-                            .size(13.0)
-                            .color(TEXT_DIM),
-                    );
-                }
-                for p in &peers {
-                    let short = &p.fingerprint[..p.fingerprint.len().min(16)];
-                    // The status file carries fingerprints when it can and only
-                    // names when it cannot; match on either.
-                    let online = connected.iter().any(|f| f.starts_with(short))
-                        || connected_names.iter().any(|n| n == &p.name);
-                    ui.horizontal(|ui| {
+        theme::card(ui, p, |ui| {
+            theme::section_title(ui, p, "DEVICES");
+            if peers.is_empty() {
+                ui.label(
+                    egui::RichText::new("No device yet — pairing takes about a minute.")
+                        .size(13.0)
+                        .color(p.dim),
+                );
+                ui.add_space(4.0);
+            }
+            for (i, peer) in peers.iter().enumerate() {
+                let short = &peer.fingerprint[..peer.fingerprint.len().min(16)];
+                // The status file carries fingerprints when it can and only
+                // names when it cannot; match on either.
+                let online = connected.iter().any(|f| f.starts_with(short))
+                    || connected_names.iter().any(|n| n == &peer.name);
+                ui.horizontal(|ui| {
+                    theme::status_dot(ui, if online { p.ok } else { p.dim }, online);
+                    ui.vertical(|ui| {
+                        ui.label(egui::RichText::new(&peer.name).size(14.0).color(p.text));
                         ui.label(
-                            egui::RichText::new(if online { "●" } else { "○" })
-                                .size(13.0)
-                                .color(if online { OK_GREEN } else { TEXT_DIM }),
+                            egui::RichText::new(if online { "Connected" } else { "Not connected" })
+                                .size(11.5)
+                                .color(p.dim),
                         );
-                        ui.vertical(|ui| {
-                            ui.label(
-                                egui::RichText::new(&p.name).size(14.0).color(Color32::WHITE),
-                            );
-                            ui.label(
-                                egui::RichText::new(short).size(11.0).monospace().color(TEXT_DIM),
-                            );
-                        });
-                        ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-                            if confirming.as_deref() == Some(p.fingerprint.as_str()) {
-                                if ui
-                                    .button(egui::RichText::new("Confirm").color(WARN_RED))
-                                    .clicked()
-                                {
-                                    to_forget = Some(p.fingerprint.clone());
-                                }
-                                if ui.button("Cancel").clicked() {
-                                    cancel = true;
-                                }
-                            } else if ui.button("Forget").clicked() {
-                                ask_forget = Some(p.fingerprint.clone());
-                            }
-                        });
                     });
+                    ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                        if confirming.as_deref() == Some(peer.fingerprint.as_str()) {
+                            if theme::danger_button(ui, p, "Remove").clicked() {
+                                to_forget = Some(peer.fingerprint.clone());
+                            }
+                            if theme::quiet_button(ui, p, "Keep").clicked() {
+                                cancel = true;
+                            }
+                        } else if theme::quiet_button(ui, p, "Forget…").clicked() {
+                            ask_forget = Some(peer.fingerprint.clone());
+                        }
+                    });
+                });
+                if i + 1 < peers.len() {
+                    ui.add_space(6.0);
+                    ui.separator();
                     ui.add_space(6.0);
                 }
-                ui.add_space(4.0);
-                if ui
-                    .button(egui::RichText::new("  Pair a device…  ").size(14.0))
-                    .clicked()
-                {
-                    pair = true;
-                }
-            });
-        ui.add_space(12.0);
+            }
+            ui.add_space(10.0);
+            if theme::primary_button(ui, p, "Pair a device").clicked() {
+                pair = true;
+            }
+        });
 
         if cancel {
             self.confirm_forget = None;
@@ -480,47 +477,34 @@ impl SettingsApp {
         }
     }
 
-    fn behaviour_card(&mut self, ui: &mut egui::Ui) {
+    fn behaviour_card(&mut self, ui: &mut egui::Ui, p: &Palette) {
         let mut proximity = self.world.status.proximity;
         let mut autostart = self.world.autostart;
         let mut prox_changed = false;
         let mut auto_changed = false;
 
-        egui::Frame::none()
-            .fill(CARD)
-            .rounding(Rounding::same(14.0))
-            .inner_margin(16.0)
-            .show(ui, |ui| {
-                ui.set_width(ui.available_width());
-                Self::heading(ui, "BEHAVIOUR");
-                if ui
-                    .checkbox(&mut proximity, "Lock the session when the phone leaves")
-                    .changed()
-                {
-                    prox_changed = true;
-                }
-                ui.label(
-                    egui::RichText::new(
-                        "Unlocks on its own when it comes back. A few seconds' grace, \
-                         so a Wi-Fi hiccup does not lock you out.",
-                    )
-                    .size(11.5)
-                    .color(TEXT_DIM),
-                );
-                ui.add_space(10.0);
-                if ui.checkbox(&mut autostart, "Start with the session").changed() {
-                    auto_changed = true;
-                }
-                ui.label(
-                    egui::RichText::new(
-                        "The tray icon comes back at login. The daemon itself is a systemd \
-                         user service and starts regardless.",
-                    )
-                    .size(11.5)
-                    .color(TEXT_DIM),
-                );
-            });
-        ui.add_space(12.0);
+        theme::card(ui, p, |ui| {
+            theme::section_title(ui, p, "BEHAVIOUR");
+            if theme::switch_row(
+                ui,
+                p,
+                "Lock when the phone leaves",
+                Some("Unlocks on its own when it comes back, with a few seconds' grace."),
+                &mut proximity,
+            ) {
+                prox_changed = true;
+            }
+            ui.add_space(10.0);
+            if theme::switch_row(
+                ui,
+                p,
+                "Start with the session",
+                Some("Brings the tray icon back at login."),
+                &mut autostart,
+            ) {
+                auto_changed = true;
+            }
+        });
 
         if prox_changed {
             match set_proximity(proximity) {
@@ -549,39 +533,33 @@ impl SettingsApp {
         }
     }
 
-    fn shortcuts_card(&mut self, ui: &mut egui::Ui) {
+    fn shortcuts_card(&mut self, ui: &mut egui::Ui, p: &Palette) {
         let installed = self.world.shortcuts;
+        let mut enabled = installed;
         let mut toggle = false;
 
-        egui::Frame::none()
-            .fill(CARD)
-            .rounding(Rounding::same(14.0))
-            .inner_margin(16.0)
-            .show(ui, |ui| {
-                ui.set_width(ui.available_width());
-                Self::heading(ui, "KEYBOARD SHORTCUTS");
-                for (keys, what) in [
-                    ("Super + Shift + V", "Send the clipboard to the phone"),
-                    ("Super + Shift + B", "Send a file to the phone"),
-                    ("Super + Shift + Space", "Play / pause on the phone"),
-                ] {
-                    ui.horizontal(|ui| {
-                        ui.label(
-                            egui::RichText::new(keys)
-                                .size(12.0)
-                                .monospace()
-                                .color(if installed { ACCENT } else { TEXT_DIM }),
-                        );
-                        ui.label(egui::RichText::new(what).size(12.0).color(TEXT_DIM));
-                    });
-                }
-                ui.add_space(10.0);
-                let label = if installed { "  Remove them  " } else { "  Add them  " };
-                if ui.button(egui::RichText::new(label).size(14.0)).clicked() {
-                    toggle = true;
-                }
-            });
-        ui.add_space(12.0);
+        theme::card(ui, p, |ui| {
+            theme::section_title(ui, p, "KEYBOARD SHORTCUTS");
+            for (keys, what) in [
+                ("Super + Shift + V", "Send the clipboard to the phone"),
+                ("Super + Shift + B", "Send a file to the phone"),
+                ("Super + Shift + Space", "Play / pause on the phone"),
+            ] {
+                ui.horizontal(|ui| {
+                    ui.label(
+                        egui::RichText::new(keys)
+                            .size(12.0)
+                            .monospace()
+                            .color(if installed { p.accent } else { p.dim }),
+                    );
+                    ui.label(egui::RichText::new(what).size(12.0).color(p.dim));
+                });
+            }
+            ui.add_space(10.0);
+            if theme::switch_row(ui, p, "Enable the shortcuts", None, &mut enabled) {
+                toggle = true;
+            }
+        });
 
         if toggle {
             let action = if installed { "remove" } else { "install" };
@@ -601,13 +579,12 @@ impl SettingsApp {
         }
     }
 
-    fn footer(&mut self, ui: &mut egui::Ui) {
+    /// The toast fades in and out on egui's animation clock — visible long
+    /// enough to read, gone before it nags.
+    fn footer(&mut self, ui: &mut egui::Ui, p: &Palette) {
         if let Some((msg, ok)) = self.toast.clone() {
-            ui.label(
-                egui::RichText::new(msg)
-                    .size(12.0)
-                    .color(if ok { OK_GREEN } else { WARN_RED }),
-            );
+            let colour = if ok { p.ok } else { p.warn };
+            ui.label(egui::RichText::new(msg).size(12.0).color(colour));
             ui.add_space(6.0);
         }
         ui.label(
@@ -617,7 +594,7 @@ impl SettingsApp {
                 env!("CARGO_PKG_VERSION")
             ))
             .size(11.0)
-            .color(TEXT_DIM),
+            .color(p.dim),
         );
     }
 }

@@ -9,6 +9,9 @@ import android.content.pm.ServiceInfo
 import android.os.Build
 import android.os.IBinder
 import android.util.Log
+import androidx.compose.runtime.getValue
+import androidx.compose.runtime.mutableStateOf
+import androidx.compose.runtime.setValue
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.Job
@@ -99,6 +102,7 @@ class LinkForegroundService : Service() {
                         Log.i(TAG, "PC address updated → $address")
                     }
                     connected = true
+                    linkUp = true
                     updateNotification("Connected to $pcName")
                     startMediaSession()
                     startBatteryReporting()
@@ -127,6 +131,7 @@ class LinkForegroundService : Service() {
                 } catch (e: Exception) {
                     Log.w(TAG, "connection lost: ${e.message}")
                     connected = false
+                    linkUp = false
                     c.close()
                     attempt++
                     // Out of Bluetooth range *and* unreachable over the network
@@ -631,6 +636,7 @@ class LinkForegroundService : Service() {
 
     private fun disconnect() {
         connected = false
+        linkUp = false
         connectionJob?.cancel()
         connectionJob = null
         client?.close()
@@ -695,6 +701,13 @@ class LinkForegroundService : Service() {
 
         @Volatile
         var activeClient: LinkClient? = null
+            private set
+
+        /**
+         * Observable mirror of the handshake state, for the home screen. The
+         * service owns the truth; the UI only ever reads it.
+         */
+        var linkUp by mutableStateOf(false)
             private set
         private const val CHANNEL_ID = "link_connection"
         private const val NOTIF_ID = 1

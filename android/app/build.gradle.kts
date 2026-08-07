@@ -11,8 +11,8 @@ android {
         applicationId = "org.linuxlink.app"
         minSdk = 33
         targetSdk = 35
-        versionCode = 404
-        versionName = "4.0.4"
+        versionCode = 410
+        versionName = "4.1.0"
     }
 
     buildFeatures { compose = true }
@@ -30,6 +30,7 @@ dependencies {
     val composeBom = platform("androidx.compose:compose-bom:2024.12.01")
     implementation(composeBom)
     implementation("androidx.compose.material3:material3")
+    implementation("androidx.compose.material:material-icons-extended")
     implementation("androidx.compose.ui:ui")
     implementation("androidx.compose.ui:ui-tooling-preview")
     implementation("androidx.activity:activity-compose:1.9.3")

@@ -14,30 +14,52 @@ import androidx.activity.ComponentActivity
 import androidx.activity.compose.setContent
 import androidx.activity.result.IntentSenderRequest
 import androidx.activity.result.contract.ActivityResultContracts
+import androidx.compose.animation.animateColorAsState
+import androidx.compose.foundation.background
+import androidx.compose.foundation.clickable
 import androidx.compose.foundation.isSystemInDarkTheme
 import androidx.compose.foundation.layout.Arrangement
+import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.ColumnScope
 import androidx.compose.foundation.layout.Row
+import androidx.compose.foundation.layout.RowScope
 import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.padding
+import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.rememberScrollState
+import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.verticalScroll
+import androidx.compose.material.icons.Icons
+import androidx.compose.material.icons.filled.ContentCopy
+import androidx.compose.material.icons.filled.Link
+import androidx.compose.material.icons.filled.Monitor
+import androidx.compose.material.icons.filled.PlayArrow
+import androidx.compose.material.icons.filled.SkipNext
+import androidx.compose.material.icons.filled.SkipPrevious
+import androidx.compose.material.icons.filled.Videocam
+import androidx.compose.material.icons.filled.VolumeDown
+import androidx.compose.material.icons.filled.VolumeOff
+import androidx.compose.material.icons.filled.VolumeUp
 import androidx.compose.material3.Button
 import androidx.compose.material3.Card
 import androidx.compose.material3.CardDefaults
 import androidx.compose.material3.ExperimentalMaterial3Api
-import androidx.compose.material3.FilledTonalButton
+import androidx.compose.material3.FilledTonalIconButton
+import androidx.compose.material3.Icon
 import androidx.compose.material3.LargeTopAppBar
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Scaffold
 import androidx.compose.material3.Shapes
+import androidx.compose.material3.Surface
+import androidx.compose.material3.Switch
 import androidx.compose.material3.Text
+import androidx.compose.material3.TextButton
 import androidx.compose.material3.TopAppBarDefaults
 import androidx.compose.material3.darkColorScheme
 import androidx.compose.material3.dynamicDarkColorScheme
@@ -50,10 +72,10 @@ import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.graphics.vector.ImageVector
 import androidx.compose.ui.input.nestedscroll.nestedScroll
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.text.font.FontWeight
-import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.unit.dp
 import com.journeyapps.barcodescanner.ScanContract
 import com.journeyapps.barcodescanner.ScanOptions
@@ -113,6 +135,14 @@ class MainActivity : ComponentActivity() {
     private var speakerOn by mutableStateOf(false)
     private var micOn by mutableStateOf(false)
 
+    /** Everything the home screen reflects; recomputed on every resume. */
+    private var pairedName by mutableStateOf<String?>(null)
+    private var autoClipOn by mutableStateOf(false)
+    private var shizukuOk by mutableStateOf(false)
+    private var folderSyncOn by mutableStateOf(false)
+    private var dndSyncOn by mutableStateOf(false)
+    private var notifMirrorOn by mutableStateOf(false)
+
     private val micPermLauncher = registerForActivityResult(
         ActivityResultContracts.RequestPermission()
     ) { granted ->
@@ -140,128 +170,208 @@ class MainActivity : ComponentActivity() {
         }
     }
 
-    @OptIn(ExperimentalMaterial3Api::class)
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
+        refreshState()
         PairedPc.load(this)?.let { status = "Paired with ${it.name}" }
         ensurePresenceObservation()
 
         setContent {
             LinkTheme {
-                val scrollBehavior = TopAppBarDefaults.exitUntilCollapsedScrollBehavior()
-                Scaffold(
-                    modifier = Modifier
-                        .fillMaxSize()
-                        .nestedScroll(scrollBehavior.nestedScrollConnection),
-                    topBar = {
-                        LargeTopAppBar(
-                            title = { Text("Linux Link", fontWeight = FontWeight.Bold) },
-                            scrollBehavior = scrollBehavior,
-                            colors = TopAppBarDefaults.largeTopAppBarColors(
-                                titleContentColor = MaterialTheme.colorScheme.primary,
-                            ),
-                        )
-                    },
-                ) { innerPadding ->
-                    Column(
-                        modifier = Modifier
-                            .fillMaxSize()
-                            .verticalScroll(rememberScrollState())
-                            .padding(innerPadding)
-                            .padding(horizontal = 16.dp),
-                        verticalArrangement = Arrangement.spacedBy(16.dp),
-                    ) {
-                        StatusCard(status)
+                if (pairedName == null) OnboardingScreen() else HomeScreen()
+            }
+        }
+    }
 
-                        Section("Device") {
-                            WideButton("Pair a PC (scan the QR)") { startPairing() }
-                            WideButton("Connect now") { connectNow() }
-                            WideButton("Test the connection (ping)") { testConnection() }
-                        }
-
-                        Section("PC control") {
-                            Text("Volume", style = MaterialTheme.typography.labelLarge)
-                            Row(horizontalArrangement = Arrangement.spacedBy(10.dp)) {
-                                Button(onClick = { pcVolume("down") }, modifier = Modifier.weight(1f)) { Text("🔉 −") }
-                                Button(onClick = { pcVolume("mute") }, modifier = Modifier.weight(1f)) { Text("🔇") }
-                                Button(onClick = { pcVolume("up") }, modifier = Modifier.weight(1f)) { Text("🔊 +") }
-                            }
-                            Text("Media", style = MaterialTheme.typography.labelLarge)
-                            Row(horizontalArrangement = Arrangement.spacedBy(10.dp)) {
-                                Button(onClick = { pcMedia("previous") }, modifier = Modifier.weight(1f)) { Text("⏮") }
-                                Button(onClick = { pcMedia("play_pause") }, modifier = Modifier.weight(1f)) { Text("⏯") }
-                                Button(onClick = { pcMedia("next") }, modifier = Modifier.weight(1f)) { Text("⏭") }
-                            }
-                        }
-
-                        Section("Clipboard") {
-                            WideButton("Send the clipboard to the PC") {
-                                startActivity(Intent(this@MainActivity, SendClipboardActivity::class.java))
-                            }
-                            WideButton(
-                                if (ClipboardAutoSync.isEnabled(this@MainActivity)) "Auto clipboard: on ✔"
-                                else "Enable automatic clipboard"
-                            ) { toggleAutoClipboard() }
-                            WideButton(
-                                if (ShizukuClipboard.ready()) "Shizuku: connected ✔"
-                                else "Connect Shizuku (reliable auto)"
-                            ) { setupShizuku() }
-                        }
-
-                        Section("Continuity") {
-                            WideButton(
-                                if (SyncFolder.isEnabled(this@MainActivity) && SyncFolder.hasAllFilesAccess())
-                                    "Folder sync: on ✔"
-                                else "Enable folder sync"
-                            ) { setupFolderSync() }
-                            WideButton(
-                                if (dndAccessGranted()) "Do Not Disturb sync: on ✔"
-                                else "Enable Do Not Disturb sync"
-                            ) { setupDndSync() }
-                            WideButton(
-                                if (notificationAccessGranted()) "Notification mirror: on ✔"
-                                else "Enable notification mirror"
-                            ) { openNotificationAccessSettings() }
-                        }
-
-                        Section("Speaker & mic") {
-                            WideButton(
-                                if (speakerOn) "🔊 PC speaker: on ✔ (tap to stop)"
-                                else "🔊 Use as the PC's speaker"
-                            ) { toggleSpeaker() }
-                            WideButton(
-                                if (micOn) "🎤 PC microphone: on ✔ (tap to stop)"
-                                else "🎤 Use as the PC's microphone"
-                            ) { toggleMic() }
-                        }
-
-                        Section("Camera") {
-                            WideButton("📷 Webcam (phone → PC)") {
-                                startActivity(Intent(this@MainActivity, WebcamActivity::class.java))
-                            }
-                        }
-
-                        Section("Second screen") {
-                            WideButton("🖥 Use as a second screen") {
-                                if (LinkForegroundService.activeClient == null) {
-                                    status = "PC not connected"
-                                } else {
-                                    startActivity(
-                                        Intent(this@MainActivity, SecondScreenActivity::class.java)
-                                    )
-                                }
-                            }
-                        }
-
-                        Spacer(Modifier.height(8.dp))
-                    }
+    /**
+     * Nothing to configure yet, so nothing to show: the first screen is the
+     * one action that makes everything else exist.
+     */
+    @Composable
+    private fun OnboardingScreen() {
+        Surface(Modifier.fillMaxSize(), color = MaterialTheme.colorScheme.background) {
+            Column(
+                modifier = Modifier.fillMaxSize().padding(32.dp),
+                horizontalAlignment = Alignment.CenterHorizontally,
+                verticalArrangement = Arrangement.Center,
+            ) {
+                Surface(
+                    shape = CircleShape,
+                    color = MaterialTheme.colorScheme.primaryContainer,
+                ) {
+                    Icon(
+                        Icons.Filled.Link,
+                        contentDescription = null,
+                        modifier = Modifier.padding(24.dp).size(48.dp),
+                        tint = MaterialTheme.colorScheme.onPrimaryContainer,
+                    )
+                }
+                Spacer(Modifier.height(24.dp))
+                Text(
+                    "Linux Link",
+                    style = MaterialTheme.typography.headlineMedium,
+                    fontWeight = FontWeight.Bold,
+                )
+                Spacer(Modifier.height(8.dp))
+                Text(
+                    "Your phone and your Linux PC, working as one.",
+                    style = MaterialTheme.typography.bodyLarge,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                )
+                Spacer(Modifier.height(32.dp))
+                Button(
+                    onClick = { startPairing() },
+                    modifier = Modifier.fillMaxWidth().height(52.dp),
+                    shape = MaterialTheme.shapes.large,
+                ) {
+                    Text("Pair your PC", style = MaterialTheme.typography.titleMedium)
+                }
+                Spacer(Modifier.height(12.dp))
+                Text(
+                    "You will scan a code shown on the computer.",
+                    style = MaterialTheme.typography.bodySmall,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                )
+                if (status.startsWith("Pairing failed") || status.startsWith("Invalid")) {
+                    Spacer(Modifier.height(16.dp))
+                    Text(
+                        status,
+                        style = MaterialTheme.typography.bodySmall,
+                        color = MaterialTheme.colorScheme.error,
+                    )
                 }
             }
         }
     }
 
+    @OptIn(ExperimentalMaterial3Api::class)
     @Composable
-    private fun StatusCard(text: String) {
+    private fun HomeScreen() {
+        val scrollBehavior = TopAppBarDefaults.exitUntilCollapsedScrollBehavior()
+        Scaffold(
+            modifier = Modifier
+                .fillMaxSize()
+                .nestedScroll(scrollBehavior.nestedScrollConnection),
+            topBar = {
+                LargeTopAppBar(
+                    title = { Text("Linux Link", fontWeight = FontWeight.Bold) },
+                    scrollBehavior = scrollBehavior,
+                    colors = TopAppBarDefaults.largeTopAppBarColors(
+                        titleContentColor = MaterialTheme.colorScheme.primary,
+                    ),
+                )
+            },
+        ) { innerPadding ->
+            Column(
+                modifier = Modifier
+                    .fillMaxSize()
+                    .verticalScroll(rememberScrollState())
+                    .padding(innerPadding)
+                    .padding(horizontal = 16.dp),
+                verticalArrangement = Arrangement.spacedBy(16.dp),
+            ) {
+                ConnectionCard()
+
+                ActionCard(
+                    icon = Icons.Filled.Monitor,
+                    title = "Second screen",
+                    sub = "Use this device as an extra display for the PC",
+                ) {
+                    if (LinkForegroundService.activeClient == null) {
+                        status = "PC not connected"
+                    } else {
+                        startActivity(Intent(this@MainActivity, SecondScreenActivity::class.java))
+                    }
+                }
+
+                SectionCard("Remote") {
+                    val up = LinkForegroundService.linkUp
+                    Row(
+                        modifier = Modifier.fillMaxWidth(),
+                        horizontalArrangement = Arrangement.spacedBy(10.dp),
+                    ) {
+                        RemoteKey(Icons.Filled.SkipPrevious, "Previous track", up) { pcMedia("previous") }
+                        RemoteKey(Icons.Filled.PlayArrow, "Play or pause", up) { pcMedia("play_pause") }
+                        RemoteKey(Icons.Filled.SkipNext, "Next track", up) { pcMedia("next") }
+                    }
+                    Row(
+                        modifier = Modifier.fillMaxWidth(),
+                        horizontalArrangement = Arrangement.spacedBy(10.dp),
+                    ) {
+                        RemoteKey(Icons.Filled.VolumeDown, "Volume down", up) { pcVolume("down") }
+                        RemoteKey(Icons.Filled.VolumeOff, "Mute", up) { pcVolume("mute") }
+                        RemoteKey(Icons.Filled.VolumeUp, "Volume up", up) { pcVolume("up") }
+                    }
+                }
+
+                SectionCard("Clipboard") {
+                    SwitchRow(
+                        "Automatic clipboard",
+                        "What you copy here appears on the PC",
+                        autoClipOn,
+                    ) { toggleAutoClipboard(); refreshState() }
+                    StateRow(
+                        "Shizuku",
+                        "Makes the automatic clipboard fully reliable",
+                        on = shizukuOk,
+                        onLabel = "Connected",
+                        offLabel = "Set up",
+                    ) { setupShizuku() }
+                    ActionRow(Icons.Filled.ContentCopy, "Send the clipboard now", null) {
+                        startActivity(Intent(this@MainActivity, SendClipboardActivity::class.java))
+                    }
+                }
+
+                SectionCard("Continuity") {
+                    StateRow(
+                        "Folder sync",
+                        "Downloads, Documents and Pictures, both ways",
+                        on = folderSyncOn,
+                    ) { setupFolderSync(); refreshState() }
+                    StateRow(
+                        "Do Not Disturb sync",
+                        "Silence one device, silence both",
+                        on = dndSyncOn,
+                    ) { setupDndSync() }
+                    StateRow(
+                        "Notification mirror",
+                        "Phone notifications on the PC, with quick reply",
+                        on = notifMirrorOn,
+                    ) { openNotificationAccessSettings() }
+                }
+
+                SectionCard("Sound and camera") {
+                    SwitchRow(
+                        "PC speaker",
+                        "The PC plays its sound through this device",
+                        speakerOn,
+                    ) { toggleSpeaker() }
+                    SwitchRow(
+                        "PC microphone",
+                        "This device becomes the PC's microphone",
+                        micOn,
+                    ) { toggleMic() }
+                    ActionRow(Icons.Filled.Videocam, "Webcam", "Use the camera on the PC") {
+                        startActivity(Intent(this@MainActivity, WebcamActivity::class.java))
+                    }
+                }
+
+                Spacer(Modifier.height(8.dp))
+            }
+        }
+    }
+
+    /**
+     * The one card that never lies: a breathing dot, the PC's name, and —
+     * only when something is wrong — the way to fix it.
+     */
+    @Composable
+    private fun ConnectionCard() {
+        val up = LinkForegroundService.linkUp
+        val dot by animateColorAsState(
+            targetValue = if (up) Color(0xFF34B463) else MaterialTheme.colorScheme.outline,
+            label = "connection dot",
+        )
         Card(
             modifier = Modifier.fillMaxWidth(),
             shape = MaterialTheme.shapes.extraLarge,
@@ -274,45 +384,209 @@ class MainActivity : ComponentActivity() {
                 modifier = Modifier.padding(20.dp),
                 verticalAlignment = Alignment.CenterVertically,
             ) {
-                Text("🔗", style = MaterialTheme.typography.headlineSmall)
+                Box(Modifier.size(12.dp).background(dot, CircleShape))
                 Spacer(Modifier.width(14.dp))
-                Text(text, style = MaterialTheme.typography.bodyLarge)
+                Column(Modifier.weight(1f)) {
+                    Text(
+                        pairedName ?: "",
+                        style = MaterialTheme.typography.titleMedium,
+                        fontWeight = FontWeight.SemiBold,
+                    )
+                    Text(
+                        if (up) "Connected" else "Not connected",
+                        style = MaterialTheme.typography.bodyMedium,
+                    )
+                }
+                if (!up) {
+                    TextButton(onClick = { connectNow() }) { Text("Connect") }
+                }
+            }
+            val note = status
+            if (note.isNotBlank() && !note.startsWith("Paired with")) {
+                Text(
+                    note,
+                    style = MaterialTheme.typography.bodySmall,
+                    modifier = Modifier.padding(start = 20.dp, end = 20.dp, bottom = 16.dp),
+                )
             }
         }
     }
 
     @Composable
-    private fun Section(title: String, content: @Composable ColumnScope.() -> Unit) {
-        Card(
-            modifier = Modifier.fillMaxWidth(),
-            shape = MaterialTheme.shapes.large,
-        ) {
+    private fun SectionCard(title: String, content: @Composable ColumnScope.() -> Unit) {
+        Card(modifier = Modifier.fillMaxWidth(), shape = MaterialTheme.shapes.large) {
             Column(
-                modifier = Modifier.padding(18.dp),
-                verticalArrangement = Arrangement.spacedBy(12.dp),
+                modifier = Modifier.padding(vertical = 8.dp),
+                verticalArrangement = Arrangement.spacedBy(0.dp),
             ) {
                 Text(
                     title,
-                    style = MaterialTheme.typography.titleMedium,
+                    style = MaterialTheme.typography.titleSmall,
                     fontWeight = FontWeight.SemiBold,
                     color = MaterialTheme.colorScheme.primary,
+                    modifier = Modifier.padding(start = 18.dp, top = 10.dp, bottom = 4.dp),
                 )
                 content()
             }
         }
     }
 
+    /** A large tappable card for the app's flagship action. */
     @Composable
-    private fun WideButton(label: String, onClick: () -> Unit) {
-        FilledTonalButton(
+    private fun ActionCard(icon: ImageVector, title: String, sub: String, onClick: () -> Unit) {
+        Card(
+            modifier = Modifier.fillMaxWidth().clickable(onClick = onClick),
+            shape = MaterialTheme.shapes.large,
+            colors = CardDefaults.cardColors(
+                containerColor = MaterialTheme.colorScheme.surfaceVariant,
+            ),
+        ) {
+            Row(
+                modifier = Modifier.padding(18.dp),
+                verticalAlignment = Alignment.CenterVertically,
+            ) {
+                Icon(icon, contentDescription = null, tint = MaterialTheme.colorScheme.primary)
+                Spacer(Modifier.width(14.dp))
+                Column {
+                    Text(title, style = MaterialTheme.typography.titleMedium)
+                    Text(
+                        sub,
+                        style = MaterialTheme.typography.bodySmall,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant,
+                    )
+                }
+            }
+        }
+    }
+
+    /** One key of the remote: a tonal icon button that fills its share. */
+    @Composable
+    private fun RowScope.RemoteKey(
+        icon: ImageVector,
+        label: String,
+        enabled: Boolean,
+        onClick: () -> Unit,
+    ) {
+        FilledTonalIconButton(
             onClick = onClick,
+            enabled = enabled,
+            modifier = Modifier.weight(1f).height(48.dp),
+            shape = MaterialTheme.shapes.small,
+        ) {
+            Icon(icon, contentDescription = label)
+        }
+    }
+
+    /** Title + one quiet line, a real switch on the right. */
+    @Composable
+    private fun SwitchRow(
+        title: String,
+        sub: String?,
+        checked: Boolean,
+        onToggle: () -> Unit,
+    ) {
+        Row(
             modifier = Modifier
                 .fillMaxWidth()
-                .height(52.dp),
-            shape = MaterialTheme.shapes.large,
+                .clickable(onClick = onToggle)
+                .padding(horizontal = 18.dp, vertical = 10.dp),
+            verticalAlignment = Alignment.CenterVertically,
         ) {
-            Text(label, textAlign = TextAlign.Center)
+            Column(Modifier.weight(1f)) {
+                Text(title, style = MaterialTheme.typography.bodyLarge)
+                if (sub != null) {
+                    Text(
+                        sub,
+                        style = MaterialTheme.typography.bodySmall,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant,
+                    )
+                }
+            }
+            Spacer(Modifier.width(12.dp))
+            Switch(checked = checked, onCheckedChange = { onToggle() })
         }
+    }
+
+    /**
+     * For the features that live behind a system permission: the row states
+     * the truth ("On" / "Off") and tapping it opens the way to change it —
+     * a switch that could not actually switch would be a small lie.
+     */
+    @Composable
+    private fun StateRow(
+        title: String,
+        sub: String?,
+        on: Boolean,
+        onLabel: String = "On",
+        offLabel: String = "Off",
+        onClick: () -> Unit,
+    ) {
+        Row(
+            modifier = Modifier
+                .fillMaxWidth()
+                .clickable(onClick = onClick)
+                .padding(horizontal = 18.dp, vertical = 10.dp),
+            verticalAlignment = Alignment.CenterVertically,
+        ) {
+            Column(Modifier.weight(1f)) {
+                Text(title, style = MaterialTheme.typography.bodyLarge)
+                if (sub != null) {
+                    Text(
+                        sub,
+                        style = MaterialTheme.typography.bodySmall,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant,
+                    )
+                }
+            }
+            Spacer(Modifier.width(12.dp))
+            Text(
+                if (on) onLabel else offLabel,
+                style = MaterialTheme.typography.labelLarge,
+                color = if (on) Color(0xFF34B463) else MaterialTheme.colorScheme.onSurfaceVariant,
+            )
+        }
+    }
+
+    /** A plain tappable row with a leading icon. */
+    @Composable
+    private fun ActionRow(icon: ImageVector, title: String, sub: String?, onClick: () -> Unit) {
+        Row(
+            modifier = Modifier
+                .fillMaxWidth()
+                .clickable(onClick = onClick)
+                .padding(horizontal = 18.dp, vertical = 10.dp),
+            verticalAlignment = Alignment.CenterVertically,
+        ) {
+            Icon(
+                icon,
+                contentDescription = null,
+                tint = MaterialTheme.colorScheme.primary,
+                modifier = Modifier.size(22.dp),
+            )
+            Spacer(Modifier.width(14.dp))
+            Column(Modifier.weight(1f)) {
+                Text(title, style = MaterialTheme.typography.bodyLarge)
+                if (sub != null) {
+                    Text(
+                        sub,
+                        style = MaterialTheme.typography.bodySmall,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant,
+                    )
+                }
+            }
+        }
+    }
+
+    /** Recomputes everything the home screen shows from the system's truth. */
+    private fun refreshState() {
+        pairedName = PairedPc.load(this)?.name
+        autoClipOn = ClipboardAutoSync.isEnabled(this)
+        shizukuOk = ShizukuClipboard.ready()
+        folderSyncOn = SyncFolder.isEnabled(this) && SyncFolder.hasAllFilesAccess()
+        dndSyncOn = dndAccessGranted()
+        notifMirrorOn = notificationAccessGranted()
+        speakerOn = PhoneAudioService.speakerOn
+        micOn = PhoneAudioService.micOn
     }
 
     private fun startPairing() {
@@ -327,10 +601,10 @@ class MainActivity : ComponentActivity() {
 
     override fun onResume() {
         super.onResume()
-        // The audio service flips its own switches off when a stream dies;
-        // coming back to the app is when the buttons catch up with reality.
-        speakerOn = PhoneAudioService.speakerOn
-        micOn = PhoneAudioService.micOn
+        // Permission grants happen in system screens and the audio service
+        // flips its own switches off when a stream dies — coming back to the
+        // app is when every row catches up with reality.
+        refreshState()
     }
 
     private fun audioAction(action: String) {
@@ -412,6 +686,7 @@ class MainActivity : ComponentActivity() {
                 PcLocator.rememberAlternates(
                     this@MainActivity, payload.addrs.filter { it != address }
                 )
+                refreshState()
                 status = "Paired with $pcName ✔ — companion association…"
                 pendingPairing = payload
                 requestCompanionAssociation()
@@ -601,28 +876,6 @@ class MainActivity : ComponentActivity() {
 
     private fun openNotificationAccessSettings() {
         startActivity(Intent(android.provider.Settings.ACTION_NOTIFICATION_LISTENER_SETTINGS))
-    }
-
-    private fun testConnection() {
-        val pc = PairedPc.load(this) ?: run {
-            status = "Pair a PC first"
-            return
-        }
-        status = "Ping to ${pc.name}…"
-        uiScope.launch {
-            try {
-                val identity = Identity.loadOrCreate(this@MainActivity)
-                val client = LinkClient(identity).also { it.expectedFingerprint = pc.fingerprint }
-                client.connect(pc.lastAddress, pc.port)
-                client.hello(Build.MODEL)
-                val rtts = (0L..2L).map { client.ping(it) }
-                client.close()
-                status = "Connected to ${pc.name} — ping: ${rtts.joinToString(" / ")} ms"
-            } catch (e: Exception) {
-                status = "Failed: ${e.message}"
-                Log.e(TAG, "ping", e)
-            }
-        }
     }
 
     companion object {

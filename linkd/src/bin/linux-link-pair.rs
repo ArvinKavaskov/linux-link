@@ -1,4 +1,8 @@
 use eframe::egui::{self, Color32, Pos2, Rect, Rounding, Sense, Vec2};
+
+#[path = "../ui_theme.rs"]
+#[allow(dead_code)]
+mod theme;
 use qrcode::{EcLevel, QrCode};
 use std::io::{BufRead, BufReader, Write};
 use std::os::unix::net::UnixStream;
@@ -8,12 +12,10 @@ use std::time::Instant;
 
 const PAIR_WINDOW_SECS: u64 = 120;
 
-const BG: Color32 = Color32::from_rgb(0x12, 0x10, 0x18);
-const CARD: Color32 = Color32::from_rgb(0xFF, 0xFF, 0xFF);
-const MODULE: Color32 = Color32::from_rgb(0x14, 0x12, 0x1A);
-const ACCENT: Color32 = Color32::from_rgb(0x9E, 0x7B, 0xFF);
-const OK_GREEN: Color32 = Color32::from_rgb(0x4C, 0xC9, 0x6E);
-const TEXT_DIM: Color32 = Color32::from_rgb(0xA8, 0xA2, 0xB8);
+/// The QR card is white with near-black modules in both themes: that is not
+/// styling, it is what a phone camera locks onto fastest.
+const QR_CARD: Color32 = Color32::WHITE;
+const QR_MODULE: Color32 = Color32::from_rgb(0x14, 0x12, 0x1A);
 
 #[derive(Clone)]
 enum PairState {
@@ -131,7 +133,7 @@ impl PairApp {
         let card_size = ui.available_width().min(396.0);
         let (rect, _) = ui.allocate_exact_size(Vec2::splat(card_size), Sense::hover());
         let painter = ui.painter_at(rect.expand(4.0));
-        painter.rect_filled(rect, Rounding::same(22.0), CARD);
+        painter.rect_filled(rect, Rounding::same(22.0), QR_CARD);
 
         // Snap the module size to whole pixels so every square stays crisp
         // (no anti-aliased gray edges the phone camera struggles with).
@@ -154,7 +156,7 @@ impl PairApp {
                     Pos2::new(origin.x + x as f32 * m, origin.y + y as f32 * m),
                     Vec2::splat(m),
                 );
-                painter.rect_filled(r, Rounding::ZERO, MODULE);
+                painter.rect_filled(r, Rounding::ZERO, QR_MODULE);
             }
         }
     }
@@ -163,10 +165,11 @@ impl PairApp {
 impl eframe::App for PairApp {
     fn update(&mut self, ctx: &egui::Context, _frame: &mut eframe::Frame) {
         ctx.request_repaint_after(std::time::Duration::from_millis(250));
+        let p = theme::frame_palette(ctx);
         let state = self.state.lock().unwrap().clone();
 
         egui::CentralPanel::default()
-            .frame(egui::Frame::none().fill(BG).inner_margin(24.0))
+            .frame(egui::Frame::none().fill(p.bg).inner_margin(24.0))
             .show(ctx, |ui| {
                 ui.vertical_centered(|ui| {
                     if let Some(logo) = &self.logo {
@@ -178,12 +181,9 @@ impl eframe::App for PairApp {
                     }
                     ui.add_space(6.0);
                     ui.label(
-                        egui::RichText::new("Linux Link")
-                            .size(24.0)
-                            .strong()
-                            .color(Color32::WHITE),
+                        egui::RichText::new("Linux Link").size(24.0).strong().color(p.text),
                     );
-                    ui.label(egui::RichText::new("Pair a device").size(14.0).color(TEXT_DIM));
+                    ui.label(egui::RichText::new("Pair a device").size(14.0).color(p.dim));
                     ui.add_space(18.0);
 
                     match &state {
@@ -191,7 +191,7 @@ impl eframe::App for PairApp {
                             ui.add_space(60.0);
                             ui.spinner();
                             ui.add_space(10.0);
-                            ui.label(egui::RichText::new("Contacting the daemon…").color(TEXT_DIM));
+                            ui.label(egui::RichText::new("One moment…").color(p.dim));
                         }
                         PairState::Waiting { payload, since } => {
                             self.draw_qr(ui, payload);
@@ -199,35 +199,47 @@ impl eframe::App for PairApp {
                             ui.label(
                                 egui::RichText::new("Scan this code with the Linux Link app")
                                     .size(15.0)
-                                    .color(Color32::WHITE),
+                                    .color(p.text),
                             );
-                            let left = PAIR_WINDOW_SECS.saturating_sub(since.elapsed().as_secs());
-                            ui.add_space(4.0);
+                            ui.add_space(2.0);
                             ui.label(
-                                egui::RichText::new(format!(
-                                    "Waiting for the phone…  {}:{:02}",
-                                    left / 60,
-                                    left % 60
-                                ))
-                                .size(13.0)
-                                .color(ACCENT),
+                                egui::RichText::new("On the phone: Pair your PC")
+                                    .size(12.5)
+                                    .color(p.dim),
                             );
+                            // The remaining time as a quietly draining bar —
+                            // legible at a glance, no clock to read.
+                            let left = PAIR_WINDOW_SECS
+                                .saturating_sub(since.elapsed().as_secs());
+                            let frac =
+                                (left as f32 / PAIR_WINDOW_SECS as f32).clamp(0.0, 1.0);
+                            ui.add_space(12.0);
+                            let width = ui.available_width().min(280.0);
+                            let (bar, _) = ui.allocate_exact_size(
+                                Vec2::new(width, 6.0),
+                                Sense::hover(),
+                            );
+                            let painter = ui.painter();
+                            painter.rect_filled(bar, Rounding::same(3.0), p.raised);
+                            let mut fill = bar;
+                            fill.set_width(width * frac);
+                            painter.rect_filled(fill, Rounding::same(3.0), p.accent);
                         }
                         PairState::Paired { name, at } => {
                             ui.add_space(50.0);
-                            ui.label(egui::RichText::new("✔").size(52.0).color(OK_GREEN));
+                            ui.label(egui::RichText::new("✔").size(52.0).color(p.ok));
                             ui.add_space(8.0);
                             ui.label(
                                 egui::RichText::new(format!("Paired with {name}"))
                                     .size(18.0)
                                     .strong()
-                                    .color(Color32::WHITE),
+                                    .color(p.text),
                             );
                             ui.add_space(4.0);
                             ui.label(
-                                egui::RichText::new("Active immediately — nothing to restart.")
+                                egui::RichText::new("Connected and ready — nothing else to do.")
                                     .size(13.0)
-                                    .color(TEXT_DIM),
+                                    .color(p.dim),
                             );
                             if at.elapsed().as_secs_f32() > 2.5 {
                                 ctx.send_viewport_cmd(egui::ViewportCommand::Close);
@@ -235,30 +247,32 @@ impl eframe::App for PairApp {
                         }
                         PairState::Timeout => {
                             ui.add_space(60.0);
-                            ui.label(egui::RichText::new("⏱").size(44.0).color(TEXT_DIM));
+                            ui.label(egui::RichText::new("⏱").size(44.0).color(p.dim));
                             ui.add_space(8.0);
                             ui.label(
-                                egui::RichText::new("Time elapsed")
+                                egui::RichText::new("The code expired")
                                     .size(17.0)
                                     .strong()
-                                    .color(Color32::WHITE),
+                                    .color(p.text),
+                            );
+                            ui.add_space(2.0);
+                            ui.label(
+                                egui::RichText::new("Codes stop working after two minutes.")
+                                    .size(12.5)
+                                    .color(p.dim),
                             );
                             ui.add_space(14.0);
-                            if ui.button(egui::RichText::new("  Try again  ").size(15.0)).clicked() {
+                            if theme::primary_button(ui, &p, "Show a new code").clicked() {
                                 start_pairing(self.state.clone());
                             }
                         }
                         PairState::Error(msg) => {
                             ui.add_space(50.0);
-                            ui.label(egui::RichText::new("⚠").size(44.0).color(ACCENT));
+                            ui.label(egui::RichText::new("⚠").size(44.0).color(p.warn));
                             ui.add_space(8.0);
-                            ui.label(
-                                egui::RichText::new(msg)
-                                    .size(14.0)
-                                    .color(Color32::WHITE),
-                            );
+                            ui.label(egui::RichText::new(msg).size(14.0).color(p.text));
                             ui.add_space(14.0);
-                            if ui.button(egui::RichText::new("  Try again  ").size(15.0)).clicked() {
+                            if theme::primary_button(ui, &p, "Try again").clicked() {
                                 start_pairing(self.state.clone());
                             }
                         }
