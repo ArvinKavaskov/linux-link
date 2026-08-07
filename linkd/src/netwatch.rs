@@ -17,6 +17,7 @@
 use crate::identity::Identity;
 use futures_util::StreamExt;
 use std::net::IpAddr;
+use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::Arc;
 use std::time::Duration;
 use tokio::sync::Mutex;
@@ -27,6 +28,9 @@ pub struct Advertiser {
     use_ble: bool,
     mdns: Mutex<Option<crate::mdns::MdnsGuard>>,
     ble: Mutex<Option<crate::ble::AdvertisingGuard>>,
+    /// Bumped by every republish. A pending BLE retry loop quits the moment it
+    /// no longer matches, so at most one retry loop is ever doing anything.
+    generation: AtomicU64,
 }
 
 impl Advertiser {
@@ -37,13 +41,15 @@ impl Advertiser {
             use_ble,
             mdns: Mutex::new(None),
             ble: Mutex::new(None),
+            generation: AtomicU64::new(0),
         });
         me.republish("startup").await;
         me
     }
 
     /// Drops the current advertisements and publishes fresh ones.
-    pub async fn republish(&self, why: &str) {
+    pub async fn republish(self: &Arc<Self>, why: &str) {
+        let generation = self.generation.fetch_add(1, Ordering::SeqCst) + 1;
         {
             let mut slot = self.mdns.lock().await;
             *slot = None; // Drop unregisters the old record first.
@@ -52,15 +58,54 @@ impl Advertiser {
                 Err(e) => tracing::warn!("mDNS unavailable: {e:#}"),
             }
         }
-        if self.use_ble {
-            let mut slot = self.ble.lock().await;
-            *slot = None;
-            match crate::ble::advertise(self.port).await {
-                Ok(g) => *slot = Some(g),
-                Err(e) => tracing::warn!("BLE unavailable ({e:#}) — falling back to mDNS/UDP only"),
-            }
+        if self.use_ble && !self.try_ble().await {
+            // The classic failure is a race at login: linkd is up before
+            // bluetoothd has finished bringing the controller up, the
+            // RegisterAdvertisement call fails, and without a retry BLE would
+            // stay dead until the next suspend or IP change. So keep knocking.
+            tracing::warn!("BLE advertisement failed — will keep retrying; mDNS/UDP still work");
+            self.spawn_ble_retry(generation);
         }
         tracing::info!("Advertisements published ({why})");
+    }
+
+    /// One BLE registration attempt. Holds the slot lock so an attempt and a
+    /// concurrent republish can never interleave their guard swaps.
+    async fn try_ble(&self) -> bool {
+        let mut slot = self.ble.lock().await;
+        *slot = None;
+        match crate::ble::advertise(self.port).await {
+            Ok(g) => {
+                *slot = Some(g);
+                true
+            }
+            Err(e) => {
+                tracing::debug!("BLE attempt failed: {e:#}");
+                false
+            }
+        }
+    }
+
+    /// Retries the BLE advertisement with a growing delay (2 s → 60 s), for as
+    /// long as this republish generation is the current one. Costs one D-Bus
+    /// call per attempt; a Bluetooth adapter that shows up an hour later still
+    /// gets picked up.
+    fn spawn_ble_retry(self: &Arc<Self>, generation: u64) {
+        let me = self.clone();
+        tokio::spawn(async move {
+            let mut wait = 2u64;
+            loop {
+                tokio::time::sleep(Duration::from_secs(wait)).await;
+                if me.generation.load(Ordering::SeqCst) != generation {
+                    return; // A newer republish owns the slot now.
+                }
+                if me.try_ble().await {
+                    tracing::info!("BLE advertisement up after retry");
+                    return;
+                }
+                wait = (wait * 2).min(60);
+            }
+        });
     }
 }
 

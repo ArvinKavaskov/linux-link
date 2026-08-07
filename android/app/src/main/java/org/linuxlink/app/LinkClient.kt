@@ -52,7 +52,10 @@ class LinkClient(private val identity: Identity) {
 
     private fun verifyServerFingerprint(conn: QuicClientConnection) {
         val expected = expectedFingerprint ?: return
-        val serverCert = conn.serverCertificateChain?.firstOrNull() ?: return
+        // A missing chain must fail closed: skipping the check because the
+        // server presented nothing would defeat the pinning entirely.
+        val serverCert = conn.serverCertificateChain?.firstOrNull()
+            ?: error("The PC presented no certificate. Refusing the connection.")
         val actual = MessageDigest.getInstance("SHA-256")
             .digest(serverCert.encoded)
             .joinToString("") { "%02x".format(it) }

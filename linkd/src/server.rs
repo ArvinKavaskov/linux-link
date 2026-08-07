@@ -12,6 +12,28 @@ use std::net::SocketAddr;
 use std::sync::Arc;
 use tokio::io::{AsyncBufReadExt, AsyncReadExt, AsyncWriteExt, BufReader};
 
+/// The longest JSON line we will buffer from the network. Clipboard text is
+/// the biggest legitimate payload and even a pasted novel stays far under
+/// this; without a cap, any device on the LAN — pairing not required, the TLS
+/// handshake accepts every certificate on purpose — could send gigabytes with
+/// no newline and grow our buffer without bound.
+const MAX_LINE_BYTES: u64 = 8 * 1024 * 1024;
+
+/// `read_line`, but a line longer than [`MAX_LINE_BYTES`] is an error instead
+/// of an allocation. Killing the stream is the right response: nothing
+/// legitimate ever comes close to the cap.
+async fn read_line_capped(
+    reader: &mut BufReader<quinn::RecvStream>,
+    line: &mut String,
+) -> Result<usize> {
+    let mut limited = (&mut *reader).take(MAX_LINE_BYTES);
+    let n = limited.read_line(line).await?;
+    if n as u64 >= MAX_LINE_BYTES {
+        anyhow::bail!("line exceeds {MAX_LINE_BYTES} bytes");
+    }
+    Ok(n)
+}
+
 /// Everything a connection needs from the rest of the daemon. It travels as one
 /// handle because every layer below wants the same set, and threading seven
 /// separate `Arc`s through three call sites is noise, not information. Cloning
@@ -40,7 +62,10 @@ pub async fn serve(svc: Services, port: u16, fast_presence: bool) -> Result<()> 
                         tracing::warn!("connection ended with error: {e:#}");
                     }
                 }
-                Err(e) => tracing::warn!("handshake failed: {e}"),
+                // Routine on a LAN: a device probing a stale address, a port
+                // scanner, a tablet looking for its *other* PC. Not worth a
+                // warning every few seconds.
+                Err(e) => tracing::debug!("handshake failed: {e}"),
             }
         });
     }
@@ -81,17 +106,63 @@ fn make_endpoint(identity: &Identity, port: u16, fast_presence: bool) -> Result<
     Ok(quinn::Endpoint::server(server_config, addr)?)
 }
 
+/// Live connections by client fingerprint, so that forgetting a device can
+/// also cut its connection *now* — trust is cached for the life of a stream,
+/// and "forget" that only takes effect at the next reconnection would feel
+/// broken to anyone watching the tray.
+static LIVE: std::sync::LazyLock<std::sync::Mutex<Vec<(usize, String, quinn::Connection)>>> =
+    std::sync::LazyLock::new(Default::default);
+
+/// Unregisters on drop, whatever way the connection handler exits.
+struct LiveGuard(usize);
+
+impl Drop for LiveGuard {
+    fn drop(&mut self) {
+        LIVE.lock().unwrap().retain(|(id, _, _)| *id != self.0);
+    }
+}
+
+fn register_live(conn: &quinn::Connection, fp: &str) -> LiveGuard {
+    LIVE.lock().unwrap().push((conn.stable_id(), fp.to_string(), conn.clone()));
+    LiveGuard(conn.stable_id())
+}
+
+/// Closes every live connection whose fingerprint starts with `fingerprint`
+/// (same prefix rule as `TrustedPeers::forget`). Returns how many were cut.
+pub fn kick(fingerprint: &str) -> usize {
+    let mut live = LIVE.lock().unwrap();
+    let before = live.len();
+    live.retain(|(_, fp, conn)| {
+        if fp.starts_with(fingerprint) {
+            conn.close(0u32.into(), b"device forgotten");
+            false
+        } else {
+            true
+        }
+    });
+    before - live.len()
+}
+
 async fn handle_connection(conn: quinn::Connection, svc: Services) -> Result<()> {
     let peer_fp = peer_fingerprint(&conn);
     let remote = conn.remote_address();
     tracing::info!("Connection from {remote} (client fingerprint: {})",
         peer_fp.as_deref().map(|f| &f[..16]).unwrap_or("none"));
+    let _live = peer_fp.as_deref().map(|fp| register_live(&conn, fp));
 
     loop {
         let (send, recv) = match conn.accept_bi().await {
             Ok(s) => s,
             Err(quinn::ConnectionError::ApplicationClosed(_))
-            | Err(quinn::ConnectionError::ConnectionClosed(_)) => return Ok(()),
+            | Err(quinn::ConnectionError::ConnectionClosed(_))
+            | Err(quinn::ConnectionError::LocallyClosed) => return Ok(()),
+            // The idle timeout *is* the presence mechanism: the phone going to
+            // sleep or out of range ends the connection this way every single
+            // day. A normal event, not an error.
+            Err(quinn::ConnectionError::TimedOut) => {
+                tracing::info!("Connection from {remote} idle-timed out (device asleep or away)");
+                return Ok(());
+            }
             Err(e) => return Err(e.into()),
         };
         let svc = svc.clone();
@@ -117,7 +188,7 @@ async fn handle_stream(
 
     loop {
         line.clear();
-        if reader.read_line(&mut line).await? == 0 {
+        if read_line_capped(&mut reader, &mut line).await? == 0 {
             return Ok(());
         }
         let msg: Message = match serde_json::from_str(line.trim()) {
@@ -131,6 +202,12 @@ async fn handle_stream(
         let trusted = session_trusted
             || peer_fp.map(|fp| TrustedPeers::load().map(|t| t.is_trusted(fp)).unwrap_or(false))
                 .unwrap_or(false);
+        // The fingerprint is fixed for the life of the TLS connection, so a
+        // stream that was trusted once is trusted until it closes. Without
+        // this, every clipboard line and battery tick re-read and re-parsed
+        // the peers file from disk. Revoking a device (`linkd forget`) drops
+        // its live connection, so the cache cannot outlive the trust.
+        session_trusted = trusted;
 
         let reply = match msg {
             Message::PairRequest { version, token, device_name } => {
@@ -310,7 +387,7 @@ async fn handle_stream(
                                 send.write_all(&msg.to_line()).await?;
                                 send.flush().await?;
                             }
-                            n = reader.read_line(&mut line) => {
+                            n = read_line_capped(&mut reader, &mut line) => {
                                 if n? == 0 {
                                     break;
                                 }
@@ -394,7 +471,7 @@ async fn stream_speaker(
                     break;
                 }
             }
-            n = reader.read_line(&mut line) => {
+            n = read_line_capped(reader, &mut line) => {
                 match n {
                     Ok(0) | Err(_) => break,
                     Ok(_) => line.clear(),
@@ -442,7 +519,7 @@ async fn stream_display(
                     break;
                 }
             }
-            n = reader.read_line(&mut line) => {
+            n = read_line_capped(reader, &mut line) => {
                 match n {
                     Ok(0) | Err(_) => break,
                     Ok(_) => {

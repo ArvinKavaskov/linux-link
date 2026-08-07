@@ -137,8 +137,8 @@ async fn handle(
     }
 }
 
-/// Drops a device from the trusted list. The phone keeps its certificate but
-/// the next handshake is refused, which is exactly what "forget" should mean:
+/// Drops a device from the trusted list and cuts its live connection on the
+/// spot. The phone keeps its certificate but it no longer buys anything:
 /// no more automatic reconnection until the user pairs it again.
 async fn forget_device(fingerprint: &str) -> String {
     if fingerprint.is_empty() {
@@ -149,10 +149,15 @@ async fn forget_device(fingerprint: &str) -> String {
         Err(e) => return format!("ERR {e}\n"),
     };
     match peers.forget(fingerprint) {
-        Ok(Some(name)) => {
-            tracing::info!("🗑 Device forgotten: {name}");
+        Ok(Some(peer)) => {
+            let cut = crate::server::kick(&peer.fingerprint);
+            tracing::info!(
+                "🗑 Device forgotten: {}{}",
+                peer.name,
+                if cut > 0 { " (live connection cut)" } else { "" }
+            );
             crate::events::poke();
-            format!("OK {name}\n")
+            format!("OK {}\n", peer.name)
         }
         Ok(None) => "ERR unknown device\n".to_string(),
         Err(e) => format!("ERR {e}\n"),

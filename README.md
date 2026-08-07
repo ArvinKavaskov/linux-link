@@ -162,7 +162,7 @@ The core is solid on my machines (Zorin PC, Honor phone): pairing, auto-reconnec
 
 ## Protocol, for the curious
 
-QUIC with ALPN `linuxlink/1`, mutual TLS 1.3, self-signed certificates pinned by SHA-256 fingerprint at pairing (trust-on-first-use via the QR code). Messages are JSON, one per line, over a bidirectional stream. The BLE advertisement (service UUID `4c4c0001-…`) carries the PC's IPv4 and QUIC port, so the phone can connect even on networks that block mDNS multicast.
+QUIC with ALPN `linuxlink/1`, mutual TLS 1.3, self-signed certificates pinned by SHA-256 fingerprint at pairing (trust-on-first-use via the QR code). Messages are JSON, one per line, over a bidirectional stream. The BLE advertisement carries the service UUID (`4c4c0001-…`) and nothing else — it exists to wake the phone, not to carry data. The PC's address comes from a one-datagram UDP probe on port 47101 (answered in milliseconds, and it works on networks that block mDNS multicast), with mDNS and the last known address as fallbacks.
 
 ## License
 

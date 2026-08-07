@@ -138,7 +138,7 @@ async fn main() -> Result<()> {
                 Err(_) => {
                     let mut peers = identity::TrustedPeers::load()?;
                     match peers.forget(&fingerprint)? {
-                        Some(name) => println!("Device forgotten: {name}"),
+                        Some(peer) => println!("Device forgotten: {}", peer.name),
                         None => anyhow::bail!("no device matches {fingerprint}"),
                     }
                 }

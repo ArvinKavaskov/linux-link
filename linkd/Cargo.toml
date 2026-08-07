@@ -1,6 +1,6 @@
 [package]
 name = "linkd"
-version = "4.0.3"
+version = "4.0.4"
 edition = "2021"
 description = "Linux Link daemon — Linux <-> Android continuity"
 license = "GPL-3.0-or-later"
