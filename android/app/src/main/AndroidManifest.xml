@@ -174,12 +174,24 @@
             android:excludeFromRecents="true"
             android:noHistory="true" />
 
-        <!-- Tuile « Envoyer le presse-papiers » dans les réglages rapides -->
+        <!-- "Send the clipboard" Quick Settings tile -->
         <service
             android:name=".ClipboardTileService"
             android:exported="true"
             android:icon="@android:drawable/ic_menu_send"
-            android:label="Presse-papiers → PC"
+            android:label="Clipboard → PC"
+            android:permission="android.permission.BIND_QUICK_SETTINGS_TILE">
+            <intent-filter>
+                <action android:name="android.service.quicksettings.action.QS_TILE" />
+            </intent-filter>
+        </service>
+
+        <!-- "Second screen" Quick Settings tile -->
+        <service
+            android:name=".SecondScreenTileService"
+            android:exported="true"
+            android:icon="@drawable/ic_tile_second_screen"
+            android:label="Second screen"
             android:permission="android.permission.BIND_QUICK_SETTINGS_TILE">
             <intent-filter>
                 <action android:name="android.service.quicksettings.action.QS_TILE" />

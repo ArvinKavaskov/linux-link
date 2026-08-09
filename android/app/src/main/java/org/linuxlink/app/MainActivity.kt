@@ -40,6 +40,7 @@ import androidx.compose.material.icons.filled.ContentCopy
 import androidx.compose.material.icons.filled.Link
 import androidx.compose.material.icons.filled.Monitor
 import androidx.compose.material.icons.filled.PlayArrow
+import androidx.compose.material.icons.filled.QrCodeScanner
 import androidx.compose.material.icons.filled.SkipNext
 import androidx.compose.material.icons.filled.SkipPrevious
 import androidx.compose.material.icons.filled.Videocam
@@ -62,8 +63,6 @@ import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
 import androidx.compose.material3.TopAppBarDefaults
 import androidx.compose.material3.darkColorScheme
-import androidx.compose.material3.dynamicDarkColorScheme
-import androidx.compose.material3.dynamicLightColorScheme
 import androidx.compose.material3.lightColorScheme
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.getValue
@@ -74,7 +73,6 @@ import androidx.compose.ui.Modifier
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.vector.ImageVector
 import androidx.compose.ui.input.nestedscroll.nestedScroll
-import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
 import com.journeyapps.barcodescanner.ScanContract
@@ -84,7 +82,7 @@ import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.launch
 import java.util.UUID
 
-private val LinkDarkFallback = darkColorScheme(
+private val LinkDark = darkColorScheme(
     primary = Color(0xFF9E7BFF),
     onPrimary = Color(0xFF1A1030),
     primaryContainer = Color(0xFF2C2350),
@@ -95,7 +93,7 @@ private val LinkDarkFallback = darkColorScheme(
     surfaceVariant = Color(0xFF2A2636),
 )
 
-private val LinkLightFallback = lightColorScheme(
+private val LinkLight = lightColorScheme(
     primary = Color(0xFF6C4BC7),
     onPrimary = Color(0xFFFFFFFF),
     primaryContainer = Color(0xFFE9DDFF),
@@ -114,15 +112,14 @@ private val LinkShapes = Shapes(
     extraLarge = RoundedCornerShape(30.dp),
 )
 
+/**
+ * The Linux Link violet in both modes, deliberately not Material You: the
+ * accent is the product's identity, not the wallpaper's. Same colour on
+ * every phone, same colour as the PC windows.
+ */
 @Composable
 private fun LinkTheme(content: @Composable () -> Unit) {
-    val dark = isSystemInDarkTheme()
-    val context = LocalContext.current
-    val colors = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.S) {
-        if (dark) dynamicDarkColorScheme(context) else dynamicLightColorScheme(context)
-    } else {
-        if (dark) LinkDarkFallback else LinkLightFallback
-    }
+    val colors = if (isSystemInDarkTheme()) LinkDark else LinkLight
     MaterialTheme(colorScheme = colors, shapes = LinkShapes, content = content)
 }
 
@@ -354,6 +351,14 @@ class MainActivity : ComponentActivity() {
                     ActionRow(Icons.Filled.Videocam, "Webcam", "Use the camera on the PC") {
                         startActivity(Intent(this@MainActivity, WebcamActivity::class.java))
                     }
+                }
+
+                SectionCard("Pairing") {
+                    ActionRow(
+                        Icons.Filled.QrCodeScanner,
+                        "Pair a different PC",
+                        "Scan the code on the computer — replaces this phone's pairing",
+                    ) { startPairing() }
                 }
 
                 Spacer(Modifier.height(8.dp))
