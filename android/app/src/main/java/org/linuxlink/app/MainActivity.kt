@@ -83,25 +83,63 @@ import kotlinx.coroutines.launch
 import java.util.UUID
 
 private val LinkDark = darkColorScheme(
-    primary = Color(0xFF9E7BFF),
-    onPrimary = Color(0xFF1A1030),
-    primaryContainer = Color(0xFF2C2350),
-    onPrimaryContainer = Color(0xFFE7DEFF),
-    background = Color(0xFF14121C),
-    surface = Color(0xFF1C1926),
-    onSurface = Color(0xFFE8E6F0),
-    surfaceVariant = Color(0xFF2A2636),
+    primary = Color(0xFFF5F5F7),
+    onPrimary = Color(0xFF111113),
+    primaryContainer = Color(0xFF232326),
+    onPrimaryContainer = Color(0xFFF5F5F7),
+    secondary = Color(0xFFC9C9CE),
+    onSecondary = Color(0xFF1A1A1C),
+    secondaryContainer = Color(0xFF2C2C2E),
+    onSecondaryContainer = Color(0xFFEDEDEF),
+    tertiary = Color(0xFFC9C9CE),
+    onTertiary = Color(0xFF1A1A1C),
+    tertiaryContainer = Color(0xFF2C2C2E),
+    onTertiaryContainer = Color(0xFFEDEDEF),
+    background = Color(0xFF000000),
+    onBackground = Color(0xFFF5F5F7),
+    surface = Color(0xFF000000),
+    onSurface = Color(0xFFF5F5F7),
+    surfaceVariant = Color(0xFF1C1C1E),
+    onSurfaceVariant = Color(0xFF98989E),
+    surfaceContainerLowest = Color(0xFF0A0A0B),
+    surfaceContainerLow = Color(0xFF141416),
+    surfaceContainer = Color(0xFF1C1C1E),
+    surfaceContainerHigh = Color(0xFF242427),
+    surfaceContainerHighest = Color(0xFF2C2C2E),
+    outline = Color(0xFF3A3A3D),
+    outlineVariant = Color(0xFF2C2C2E),
+    error = Color(0xFFE56B6B),
+    onError = Color(0xFF1A1A1C),
 )
 
 private val LinkLight = lightColorScheme(
-    primary = Color(0xFF6C4BC7),
+    primary = Color(0xFF111113),
     onPrimary = Color(0xFFFFFFFF),
-    primaryContainer = Color(0xFFE9DDFF),
-    onPrimaryContainer = Color(0xFF23085C),
-    background = Color(0xFFFDF8FF),
-    surface = Color(0xFFFDF8FF),
-    onSurface = Color(0xFF1C1B1F),
-    surfaceVariant = Color(0xFFE7E0EB),
+    primaryContainer = Color(0xFFEDEDF0),
+    onPrimaryContainer = Color(0xFF111113),
+    secondary = Color(0xFF4A4A4F),
+    onSecondary = Color(0xFFFFFFFF),
+    secondaryContainer = Color(0xFFF0F0F2),
+    onSecondaryContainer = Color(0xFF1C1C1E),
+    tertiary = Color(0xFF4A4A4F),
+    onTertiary = Color(0xFFFFFFFF),
+    tertiaryContainer = Color(0xFFF0F0F2),
+    onTertiaryContainer = Color(0xFF1C1C1E),
+    background = Color(0xFFF4F4F6),
+    onBackground = Color(0xFF111113),
+    surface = Color(0xFFF4F4F6),
+    onSurface = Color(0xFF111113),
+    surfaceVariant = Color(0xFFEAEAED),
+    onSurfaceVariant = Color(0xFF6E6E73),
+    surfaceContainerLowest = Color(0xFFFFFFFF),
+    surfaceContainerLow = Color(0xFFFFFFFF),
+    surfaceContainer = Color(0xFFFAFAFB),
+    surfaceContainerHigh = Color(0xFFF0F0F2),
+    surfaceContainerHighest = Color(0xFFEAEAED),
+    outline = Color(0xFFD6D6DA),
+    outlineVariant = Color(0xFFE5E5E8),
+    error = Color(0xFFC94141),
+    onError = Color(0xFFFFFFFF),
 )
 
 private val LinkShapes = Shapes(
@@ -113,9 +151,10 @@ private val LinkShapes = Shapes(
 )
 
 /**
- * The Linux Link violet in both modes, deliberately not Material You: the
- * accent is the product's identity, not the wallpaper's. Same colour on
- * every phone, same colour as the PC windows.
+ * Monochrome by intent: white and near-blacks in light, true black and soft
+ * whites in dark. Colour is reserved for meaning — the green dot of a live
+ * link, the red of an error. Deliberately not Material You: the interface is
+ * the same on every phone, and the same as the PC windows.
  */
 @Composable
 private fun LinkTheme(content: @Composable () -> Unit) {
@@ -139,6 +178,9 @@ class MainActivity : ComponentActivity() {
     private var folderSyncOn by mutableStateOf(false)
     private var dndSyncOn by mutableStateOf(false)
     private var notifMirrorOn by mutableStateOf(false)
+    private var knownPcs by mutableStateOf(listOf<PairedPc>())
+    private var activeFp by mutableStateOf("")
+    private var secondScreenOn by mutableStateOf(false)
 
     private val micPermLauncher = registerForActivityResult(
         ActivityResultContracts.RequestPermission()
@@ -269,15 +311,17 @@ class MainActivity : ComponentActivity() {
             ) {
                 ConnectionCard()
 
-                ActionCard(
-                    icon = Icons.Filled.Monitor,
-                    title = "Second screen",
-                    sub = "Use this device as an extra display for the PC",
-                ) {
-                    if (LinkForegroundService.activeClient == null) {
-                        status = "PC not connected"
-                    } else {
-                        startActivity(Intent(this@MainActivity, SecondScreenActivity::class.java))
+                if (secondScreenOn) {
+                    ActionCard(
+                        icon = Icons.Filled.Monitor,
+                        title = "Second screen",
+                        sub = "Use this device as an extra display for the PC",
+                    ) {
+                        if (LinkForegroundService.activeClient == null) {
+                            status = "PC not connected"
+                        } else {
+                            startActivity(Intent(this@MainActivity, SecondScreenActivity::class.java))
+                        }
                     }
                 }
 
@@ -353,12 +397,40 @@ class MainActivity : ComponentActivity() {
                     }
                 }
 
-                SectionCard("Pairing") {
+                SectionCard("Your PCs") {
+                    for (pc in knownPcs) {
+                        val active = pc.fingerprint.equals(activeFp, ignoreCase = true)
+                        StateRow(
+                            pc.name,
+                            when {
+                                active && LinkForegroundService.linkUp -> "Connected"
+                                active -> "Active — not connected"
+                                else -> "Tap to switch"
+                            },
+                            on = active,
+                            onLabel = "Active",
+                            offLabel = "",
+                        ) { if (!active) switchToPc(pc) }
+                    }
                     ActionRow(
                         Icons.Filled.QrCodeScanner,
-                        "Pair a different PC",
-                        "Scan the code on the computer — replaces this phone's pairing",
+                        "Pair another PC",
+                        "Scan the code on the computer — adds it here",
                     ) { startPairing() }
+                }
+
+                SectionCard("This device") {
+                    StateRow(
+                        "Second screen",
+                        if (AppPrefs.isTablet(this@MainActivity))
+                            "On by default on tablets"
+                        else
+                            "Off by default on phones",
+                        on = secondScreenOn,
+                    ) {
+                        AppPrefs.setSecondScreenEnabled(this@MainActivity, !secondScreenOn)
+                        refreshState()
+                    }
                 }
 
                 Spacer(Modifier.height(8.dp))
@@ -582,8 +654,24 @@ class MainActivity : ComponentActivity() {
         }
     }
 
+    /** Saves [pc] as the active PC and tells the service to redial. */
+    private fun switchToPc(pc: PairedPc) {
+        PairedPc.save(this, pc)
+        status = "Switching to ${pc.name}…"
+        refreshState()
+        startService(
+            Intent(this, LinkForegroundService::class.java)
+                .setAction(LinkForegroundService.ACTION_RECONNECT)
+        )
+    }
+
     /** Recomputes everything the home screen shows from the system's truth. */
     private fun refreshState() {
+        // Phones that paired before the registry existed get seeded here.
+        PairedPc.load(this)?.let { KnownPcs.remember(this, it) }
+        knownPcs = KnownPcs.list(this)
+        activeFp = PairedPc.load(this)?.fingerprint ?: ""
+        secondScreenOn = AppPrefs.secondScreenEnabled(this)
         pairedName = PairedPc.load(this)?.name
         autoClipOn = ClipboardAutoSync.isEnabled(this)
         shizukuOk = ShizukuClipboard.ready()
@@ -683,10 +771,9 @@ class MainActivity : ComponentActivity() {
                 val pcName = client.pair(payload.token, Build.MODEL)
                 client.close()
 
-                PairedPc.save(
-                    this@MainActivity,
-                    PairedPc(pcName, address, payload.port, payload.fingerprint)
-                )
+                val pc = PairedPc(pcName, address, payload.port, payload.fingerprint)
+                PairedPc.save(this@MainActivity, pc)
+                KnownPcs.remember(this@MainActivity, pc)
                 // Keep the others as fallbacks for the rediscovery path.
                 PcLocator.rememberAlternates(
                     this@MainActivity, payload.addrs.filter { it != address }

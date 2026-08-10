@@ -3,9 +3,10 @@
 //! One file, shared by every egui binary through `#[path]`, so the pairing
 //! window and the settings window can never drift apart. The rules:
 //!
-//! * **One accent.** The Linux Link violet, tuned per mode so it reads on
-//!   both backgrounds. Green and red are reserved for *states* (connected,
-//!   destructive) and never decorate.
+//! * **One accent, and it is not a colour.** Near-black on light, soft
+//!   white on dark — the interface is monochrome by intent, and colour is
+//!   reserved for *meaning*: the green of a live link, the red of a
+//!   destructive act. The logo keeps its violet; the chrome stays quiet.
 //! * **Light and dark**, following the system. Nothing is hard-coded to a
 //!   mode; every color goes through [`Palette`].
 //! * **A spacing scale** (4 / 8 / 12 / 16 / 20 / 24) and two radii: 16 for
@@ -33,29 +34,29 @@ pub struct Palette {
 pub fn palette(dark: bool) -> Palette {
     if dark {
         Palette {
-            bg: Color32::from_rgb(0x12, 0x10, 0x18),
-            card: Color32::from_rgb(0x1B, 0x18, 0x24),
-            raised: Color32::from_rgb(0x25, 0x21, 0x31),
-            text: Color32::from_rgb(0xF2, 0xEF, 0xF7),
-            dim: Color32::from_rgb(0xA8, 0xA2, 0xB8),
-            accent: Color32::from_rgb(0x9E, 0x7B, 0xFF),
-            on_accent: Color32::from_rgb(0x16, 0x0E, 0x2A),
+            bg: Color32::from_rgb(0x00, 0x00, 0x00),
+            card: Color32::from_rgb(0x14, 0x14, 0x16),
+            raised: Color32::from_rgb(0x24, 0x24, 0x27),
+            text: Color32::from_rgb(0xF5, 0xF5, 0xF7),
+            dim: Color32::from_rgb(0x98, 0x98, 0x9E),
+            accent: Color32::from_rgb(0xF5, 0xF5, 0xF7),
+            on_accent: Color32::from_rgb(0x11, 0x11, 0x13),
             ok: Color32::from_rgb(0x4C, 0xC9, 0x6E),
             warn: Color32::from_rgb(0xE5, 0x6B, 0x6B),
-            outline: Color32::from_rgba_unmultiplied(0xFF, 0xFF, 0xFF, 0x14),
+            outline: Color32::from_rgba_unmultiplied(0xFF, 0xFF, 0xFF, 0x1C),
         }
     } else {
         Palette {
-            bg: Color32::from_rgb(0xF6, 0xF4, 0xFA),
+            bg: Color32::from_rgb(0xF4, 0xF4, 0xF6),
             card: Color32::WHITE,
-            raised: Color32::from_rgb(0xEF, 0xEC, 0xF6),
-            text: Color32::from_rgb(0x1C, 0x1A, 0x22),
-            dim: Color32::from_rgb(0x6E, 0x68, 0x80),
-            accent: Color32::from_rgb(0x6C, 0x4B, 0xC7),
+            raised: Color32::from_rgb(0xEC, 0xEC, 0xEF),
+            text: Color32::from_rgb(0x11, 0x11, 0x13),
+            dim: Color32::from_rgb(0x6E, 0x6E, 0x73),
+            accent: Color32::from_rgb(0x11, 0x11, 0x13),
             on_accent: Color32::WHITE,
-            ok: Color32::from_rgb(0x25, 0x9A, 0x4C),
+            ok: Color32::from_rgb(0x1F, 0x9D, 0x4D),
             warn: Color32::from_rgb(0xC9, 0x41, 0x41),
-            outline: Color32::from_rgba_unmultiplied(0x00, 0x00, 0x00, 0x16),
+            outline: Color32::from_rgba_unmultiplied(0x00, 0x00, 0x00, 0x1A),
         }
     }
 }
@@ -198,12 +199,15 @@ pub fn toggle(ui: &mut Ui, p: &Palette, on: &mut bool) -> Response {
             .ctx()
             .animate_bool_with_time(response.id, *on, 0.12);
         let track = mix(p.raised, p.accent, t);
+        // The knob must read against both ends of the track: it borrows the
+        // accent's own contrast colour once the switch is on.
+        let knob_colour = mix(Color32::WHITE, p.on_accent, t);
         let painter = ui.painter();
         painter.rect_filled(rect, Radius::same(12.0), track);
         painter.rect_stroke(rect, Radius::same(12.0), Stroke::new(1.0, p.outline));
         let knob_x = egui::lerp((rect.left() + 12.0)..=(rect.right() - 12.0), t);
         let knob = egui::Pos2::new(knob_x, rect.center().y);
-        painter.circle_filled(knob, 9.0, Color32::WHITE);
+        painter.circle_filled(knob, 9.0, knob_colour);
         painter.circle_stroke(knob, 9.0, Stroke::new(1.0, p.outline));
     }
     response

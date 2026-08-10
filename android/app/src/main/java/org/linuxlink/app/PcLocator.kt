@@ -64,6 +64,54 @@ object PcLocator {
         found.toList()
     }
 
+    /**
+     * One broadcast, any answer whose fingerprint we already trust. This is
+     * the multi-PC heart: when the active PC is silent, whichever other known
+     * machine answers becomes the obvious thing to connect to. UDP only —
+     * this runs inside the retry path, where 1 s is already a long time.
+     */
+    suspend fun discoverAny(context: Context, known: List<PairedPc>): PairedPc? =
+        withContext(Dispatchers.IO) {
+            if (known.isEmpty()) return@withContext null
+            var found: PairedPc? = null
+            runCatching {
+                DatagramSocket().use { sock ->
+                    sock.broadcast = true
+                    sock.soTimeout = 200
+                    val data = PROBE.toByteArray()
+                    val targets = broadcastAddresses()
+                    if (targets.isEmpty()) return@use
+                    for (addr in targets) {
+                        runCatching { sock.send(DatagramPacket(data, data.size, addr, DISCOVERY_PORT)) }
+                    }
+                    val buf = ByteArray(512)
+                    val deadline = System.currentTimeMillis() + 1_000
+                    while (System.currentTimeMillis() < deadline) {
+                        val p = DatagramPacket(buf, buf.size)
+                        try {
+                            sock.receive(p)
+                        } catch (e: SocketTimeoutException) {
+                            continue
+                        }
+                        val o = runCatching { JSONObject(String(p.data, 0, p.length)) }.getOrNull()
+                            ?: continue
+                        val fp = o.optString("fp")
+                        val match = known.firstOrNull { it.fingerprint.equals(fp, ignoreCase = true) }
+                            ?: continue
+                        val host = p.address?.hostAddress ?: continue
+                        Log.i(TAG, "known PC ${o.optString("name")} answered from $host")
+                        found = match.copy(
+                            name = o.optString("name", match.name),
+                            lastAddress = host,
+                            port = o.optInt("port", match.port),
+                        )
+                        break
+                    }
+                }
+            }.onFailure { Log.d(TAG, "discoverAny failed: ${it.message}") }
+            found
+        }
+
     // ---------------------------------------------------------------- UDP
 
     private suspend fun udpProbe(fingerprint: String): List<String> = withContext(Dispatchers.IO) {

@@ -61,6 +61,15 @@ class LinkForegroundService : Service() {
                     stopSelf()
                 }
             }
+            ACTION_RECONNECT -> {
+                // The user picked another PC on the home screen: drop the old
+                // link and dial the (newly saved) active one.
+                disconnect()
+                startAsForeground("Switching PC…")
+                connect()
+                netMonitor?.poke()
+                startAutoClipboardIfEnabled()
+            }
             ACTION_MEDIA_PREV -> sendPcMedia("previous")
             ACTION_MEDIA_PLAYPAUSE -> sendPcMedia("play_pause")
             ACTION_MEDIA_NEXT -> sendPcMedia("next")
@@ -103,6 +112,7 @@ class LinkForegroundService : Service() {
                     }
                     connected = true
                     linkUp = true
+                    KnownPcs.remember(this@LinkForegroundService, pc.copy(name = pcName))
                     updateNotification("Connected to $pcName")
                     startMediaSession()
                     startBatteryReporting()
@@ -134,6 +144,23 @@ class LinkForegroundService : Service() {
                     linkUp = false
                     c.close()
                     attempt++
+                    // Several distros, one phone: if the machine we are
+                    // dialling stays silent but another *known* PC answers the
+                    // discovery broadcast, that one is plainly the PC of the
+                    // moment. Switch to it and keep the loop going — pinning
+                    // still applies, only already-trusted fingerprints match.
+                    if (attempt == 2) {
+                        val others = KnownPcs.list(this@LinkForegroundService)
+                            .filterNot { it.fingerprint.equals(pc.fingerprint, ignoreCase = true) }
+                        PcLocator.discoverAny(this@LinkForegroundService, others)?.let { found ->
+                            Log.i(TAG, "${pc.name} absent but ${found.name} is here — switching")
+                            pc = found
+                            PairedPc.save(this@LinkForegroundService, found)
+                            c.expectedFingerprint = found.fingerprint
+                            updateNotification("Switching to ${found.name}…")
+                            attempt = 0
+                        }
+                    }
                     // Out of Bluetooth range *and* unreachable over the network
                     // after several tries: we have left the house. Stand down
                     // rather than probe the Wi-Fi every twenty seconds all day —
@@ -583,6 +610,30 @@ class LinkForegroundService : Service() {
      * second screen if it is locked, and shows a one-tap card if it is not.
      */
     private fun openSecondScreen() {
+        if (!AppPrefs.secondScreenEnabled(this)) {
+            // The PC offered its display but this device has the feature off
+            // (the phone default). Say so quietly instead of doing nothing —
+            // silence after a click on the PC would read as a bug.
+            val channelId = "link_screen"
+            val nm = getSystemService(NotificationManager::class.java)
+            nm.createNotificationChannel(
+                NotificationChannel(channelId, "Second screen", NotificationManager.IMPORTANCE_DEFAULT)
+            )
+            val openApp = android.app.PendingIntent.getActivity(
+                this, SECOND_SCREEN_NOTIF,
+                Intent(this, MainActivity::class.java).addFlags(Intent.FLAG_ACTIVITY_NEW_TASK),
+                android.app.PendingIntent.FLAG_IMMUTABLE or android.app.PendingIntent.FLAG_UPDATE_CURRENT
+            )
+            val notif = Notification.Builder(this, channelId)
+                .setContentTitle("Second screen is off on this device")
+                .setContentText("Your PC offered its display — enable Second screen in Linux Link")
+                .setSmallIcon(android.R.drawable.stat_sys_upload_done)
+                .setContentIntent(openApp)
+                .setAutoCancel(true)
+                .build()
+            nm.notify(SECOND_SCREEN_NOTIF, notif)
+            return
+        }
         val open = Intent(this, SecondScreenActivity::class.java)
             .addFlags(Intent.FLAG_ACTIVITY_NEW_TASK or Intent.FLAG_ACTIVITY_CLEAR_TOP)
         if (android.provider.Settings.canDrawOverlays(this) &&
@@ -692,6 +743,7 @@ class LinkForegroundService : Service() {
     companion object {
         const val ACTION_CONNECT = "org.linuxlink.app.CONNECT"
         const val ACTION_DISCONNECT = "org.linuxlink.app.DISCONNECT"
+        const val ACTION_RECONNECT = "org.linuxlink.app.RECONNECT"
         const val ACTION_BLE_GONE = "org.linuxlink.app.BLE_GONE"
         const val ACTION_MEDIA_PREV = "org.linuxlink.app.MEDIA_PREV"
         const val ACTION_MEDIA_PLAYPAUSE = "org.linuxlink.app.MEDIA_PLAYPAUSE"

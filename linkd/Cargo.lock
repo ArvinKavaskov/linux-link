@@ -1929,7 +1929,7 @@ dependencies = [
 
 [[package]]
 name = "linkd"
-version = "4.2.0"
+version = "5.0.0"
 dependencies = [
  "anyhow",
  "bluer",
