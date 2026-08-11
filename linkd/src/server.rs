@@ -490,6 +490,10 @@ async fn stream_display(
     send: &mut quinn::SendStream,
     mut session: crate::display::DisplaySession,
 ) {
+    // The video shares one QUIC connection with everything else. If a file
+    // transfer is running, the scheduler must never make a frame wait behind
+    // a megabyte of bulk data: raise this stream above the default priority.
+    let _ = send.set_priority(1);
     let ready = format!(
         "{{\"type\":\"display_ready\",\"width\":{},\"height\":{}}}\n",
         session.width, session.height

@@ -381,6 +381,17 @@ class SecondScreenActivity : Activity(), SurfaceHolder.Callback {
             if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.R) {
                 setInteger(MediaFormat.KEY_LOW_LATENCY, 1)
             }
+            // Realtime priority and an operating rate far above the actual
+            // frame rate tell the codec to decode as fast as it can instead
+            // of pacing itself against presentation timestamps.
+            setInteger(MediaFormat.KEY_PRIORITY, 0)
+            setFloat(MediaFormat.KEY_OPERATING_RATE, 240f)
+            // Vendor spellings of "low latency" for firmwares that predate or
+            // ignore the standard key. Unknown keys are simply ignored, and
+            // runCatching keeps any exotic OEM parser from hurting us.
+            runCatching { setInteger("vendor.qti-ext-dec-low-latency.enable", 1) }
+            runCatching { setInteger("vendor.rtc-ext-dec-low-latency.enable", 1) }
+            runCatching { setInteger("vendor.hisi-ext-low-latency-video-dec.video-scene-for-low-latency-req", 1) }
         }
         val codec = MediaCodec.createDecoderByType("video/avc")
         try {

@@ -70,7 +70,11 @@ impl Encoder {
             }
         });
 
-        let (tx, rx) = mpsc::channel::<Vec<u8>>(16);
+        // Small on purpose: the drop-on-full policy only engages when this
+        // channel is full, so its depth IS the worst-case queueing latency.
+        // Four units at 60 fps is 66 ms of ceiling; sixteen was a quarter
+        // second of invisible lag whenever Wi-Fi slowed down.
+        let (tx, rx) = mpsc::channel::<Vec<u8>>(4);
         tokio::spawn(pump(stdout, tx));
 
         Ok(Self { child, units: rx })
@@ -91,9 +95,11 @@ async fn pump(mut stdout: tokio::process::ChildStdout, tx: mpsc::Sender<Vec<u8>>
         // fatal for a damage-driven one: a Mutter screencast of a still
         // desktop sends one frame and stops, and that frame would sit in the
         // buffers forever while the tablet shows black. A short idle beat
-        // flushes whatever is complete.
+        // flushes whatever is complete. 10 ms: fast enough that the first
+        // frame after stillness never waits visibly, rare enough while
+        // streaming (frames arrive every ~16 ms) to cost nothing.
         let read = tokio::time::timeout(
-            std::time::Duration::from_millis(40),
+            std::time::Duration::from_millis(10),
             stdout.read(&mut buf),
         )
         .await;
@@ -142,7 +148,7 @@ fn build_command(source: &CaptureSource, fps: u32, bitrate_kbps: u32) -> Result<
                      (gstreamer1.0-tools / gstreamer1-plugins / gstreamer)"
                 );
             }
-            let enc = gst_encoder(bitrate_kbps)?;
+            let enc = gst_encoder(bitrate_kbps, fps)?;
             let mut args: Vec<String> = vec![
                 "-q".into(),
                 "pipewiresrc".into(),
@@ -156,6 +162,7 @@ fn build_command(source: &CaptureSource, fps: u32, bitrate_kbps: u32) -> Result<
             }
             args.extend([
                 "videoconvert".into(),
+                "n-threads=4".into(),
                 "!".into(),
                 "video/x-raw,format=I420".into(),
                 "!".into(),
@@ -189,6 +196,8 @@ fn build_command(source: &CaptureSource, fps: u32, bitrate_kbps: u32) -> Result<
                     "preset=ultrafast".into(),
                     "-p".into(),
                     "tune=zerolatency".into(),
+                    "-p".into(),
+                    "x264-params=intra-refresh=1:keyint=60".into(),
                     "-x".into(),
                     "yuv420p".into(),
                     "-m".into(),
@@ -228,7 +237,11 @@ fn build_command(source: &CaptureSource, fps: u32, bitrate_kbps: u32) -> Result<
                     "-b:v".into(),
                     format!("{bitrate_kbps}k"),
                     "-x264-params".into(),
-                    format!("repeat-headers=1:keyint={}", fps * 2),
+                    format!(
+                        "repeat-headers=1:keyint={fps}:intra-refresh=1:\
+vbv-maxrate={bitrate_kbps}:vbv-bufsize={}",
+                        (bitrate_kbps * 2 / fps.max(1)).max(64)
+                    ),
                     "-f".into(),
                     "h264".into(),
                     "-".into(),
@@ -241,14 +254,28 @@ fn build_command(source: &CaptureSource, fps: u32, bitrate_kbps: u32) -> Result<
 /// The gst H.264 element chain, by decreasing preference. x264 in zerolatency
 /// mode is the boring, universally packaged choice; openh264 covers Fedora
 /// without RPM Fusion; vah264enc is the hardware path when present.
-fn gst_encoder(bitrate_kbps: u32) -> Result<Vec<String>> {
+fn gst_encoder(bitrate_kbps: u32, fps: u32) -> Result<Vec<String>> {
     if gst_has_element("x264enc") {
+        // The two settings that matter for glass-to-glass latency:
+        //
+        // * `intra-refresh` replaces the periodic IDR frame with a rolling
+        //   column of intra blocks. An IDR is 5-10× the size of a P-frame;
+        //   every two seconds it used to hit the wire as a burst the link had
+        //   to swallow and the decoder had to chew — a visible rhythm of
+        //   jank. With the refresh spread across the GOP, every frame is
+        //   roughly the same size.
+        // * `vbv-buf-capacity` of about two frame-times caps how large any
+        //   single frame may get, so the transmission time per frame is
+        //   constant instead of occasionally spiking.
+        let vbv_ms = (2_000 / fps.max(1)).max(16);
         return Ok(vec![
             "x264enc".into(),
             "tune=zerolatency".into(),
             "speed-preset=ultrafast".into(),
             format!("bitrate={bitrate_kbps}"),
-            "key-int-max=120".into(),
+            "intra-refresh=true".into(),
+            format!("key-int-max={fps}"),
+            format!("vbv-buf-capacity={vbv_ms}"),
             "byte-stream=true".into(),
         ]);
     }
