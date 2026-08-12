@@ -4,16 +4,7 @@ import android.content.Context
 import org.json.JSONArray
 import org.json.JSONObject
 
-/**
- * Every PC this phone has ever paired with, keyed by TLS fingerprint.
- *
- * [PairedPc] remains the single *active* PC — the one the service dials.
- * This registry is what makes owning several computers feel normal: pairing
- * adds instead of replacing, the home screen can list them all, and the
- * service can switch to whichever one is actually in the room.
- */
 object KnownPcs {
-
     private const val PREFS = "known_pcs"
     private const val KEY = "pcs"
 
@@ -37,7 +28,6 @@ object KnownPcs {
         }.getOrElse { emptyList() }
     }
 
-    /** Adds a PC, or refreshes its name and address if it is already known. */
     fun remember(context: Context, pc: PairedPc) {
         val merged = list(context)
             .filterNot { it.fingerprint.equals(pc.fingerprint, ignoreCase = true) } + pc

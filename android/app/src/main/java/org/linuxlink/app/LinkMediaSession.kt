@@ -9,7 +9,6 @@ import android.util.Log
 import org.json.JSONObject
 
 class LinkMediaSession(private val context: Context) {
-
     private var session: MediaSession? = null
 
     var title: String = "PC media"

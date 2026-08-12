@@ -1,6 +1,4 @@
 <?xml version="1.0" encoding="utf-8"?>
 <paths>
-    <!-- Images de presse-papiers reçues du PC, exposées via FileProvider
-         pour pouvoir être collées dans d'autres apps. -->
     <cache-path name="clipboard" path="clipboard/" />
 </paths>

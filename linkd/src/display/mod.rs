@@ -1,19 +1,3 @@
-//! The tablet as a true second monitor.
-//!
-//! One `DisplaySession` = one virtual monitor + one H.264 stream out + one
-//! input channel in, all riding the existing paired-and-pinned QUIC
-//! connection. The pieces:
-//!
-//! * [`backends`] makes a monitor exist that hardware never provided, in
-//!   whichever dialect the running compositor speaks.
-//! * [`encoder`] turns the captured frames into H.264 access units.
-//! * [`input`] (uinput) and the Mutter session (D-Bus) push the tablet's
-//!   touches, pen, keys and clicks into the desktop.
-//!
-//! The cursor "flows" onto the tablet for free: the virtual monitor sits in
-//! the compositor's layout like any physical one, so edge-crossing, window
-//! dragging and fullscreen video are all just the desktop doing desktop
-//! things.
 
 pub mod backends;
 pub mod encoder;
@@ -25,7 +9,6 @@ use serde::Deserialize;
 use std::sync::atomic::{AtomicBool, Ordering};
 use tokio::sync::mpsc;
 
-/// A rectangle in desktop logical pixels.
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub struct Rect {
     pub x: f64,
@@ -34,18 +17,13 @@ pub struct Rect {
     pub h: f64,
 }
 
-/// Input events as the tablet sends them: one compact JSON object per line,
-/// coordinates normalized to the tablet monitor ([0,1]).
 #[derive(Debug, Deserialize)]
 #[serde(tag = "t")]
 pub enum RemoteInput {
-    /// Pointer/hover motion.
     #[serde(rename = "mv")]
     Move { x: f64, y: f64 },
-    /// b: 0 = left, 1 = right, 2 = middle.
     #[serde(rename = "bt")]
     Button { b: u8, d: bool },
-    /// Pixel-ish deltas; `end` marks the end of a scroll gesture.
     #[serde(rename = "sc")]
     Scroll {
         dx: f64,
@@ -53,16 +31,10 @@ pub enum RemoteInput {
         #[serde(default)]
         end: bool,
     },
-    /// Linux evdev keycode.
     #[serde(rename = "ky")]
     Key { c: u16, d: bool },
-    /// Raw finger contact. ph: 0 down, 1 move, 2 up, 3 cancel.
     #[serde(rename = "tc")]
     Touch { id: u32, ph: u8, x: f64, y: f64 },
-    /// Stylus: position, pressure [0,1], tip down, tilt in degrees along each
-    /// axis, eraser end in use, barrel button held, and whether the tool is
-    /// still within the digitizer's range. Everything past `d` is optional, so
-    /// an older tablet build stays on the wire.
     #[serde(rename = "pn")]
     Pen {
         x: f64,
@@ -86,8 +58,6 @@ fn yes() -> bool {
     true
 }
 
-/// Only one tablet can be the second screen at a time — the virtual outputs
-/// and uinput devices are process-wide singletons in spirit.
 static ACTIVE: AtomicBool = AtomicBool::new(false);
 
 pub struct DisplaySession {
@@ -97,19 +67,13 @@ pub struct DisplaySession {
     encoder: Option<encoder::Encoder>,
     sink: Sink,
     mutter: Option<backends::MutterSession>,
-    /// The session's own clock. Touch gestures are timed against it, and a
-    /// monotonic origin means no wall-clock jump can misfire a long press.
     started: std::time::Instant,
     _guards: backends::Guards,
 }
 
 enum Sink {
     Mutter,
-    /// Boxed: the uinput sink carries three virtual devices and their gesture
-    /// state, and the other two variants are empty — inline it and every
-    /// `Sink` in the program would pay for the largest one.
     Uinput(Box<input::UinputSink>),
-    /// Input device creation failed (no uinput permission) — video still runs.
     None,
 }
 
@@ -128,7 +92,6 @@ impl DisplaySession {
     }
 
     async fn start_inner(width: u32, height: u32, fps: u32) -> Result<Self> {
-        // Even dimensions or the encoder sulks; cap at 4K out of politeness.
         let width = (width.clamp(640, 3840) / 2) * 2;
         let height = (height.clamp(400, 2400) / 2) * 2;
         let fps = fps.clamp(24, 60);
@@ -198,10 +161,6 @@ impl DisplaySession {
         }
     }
 
-    /// Called on a timer by the stream loop. Some gestures — a finger held
-    /// perfectly still to mean "right click" — produce no events at all while
-    /// they happen, so they can only be noticed by asking the clock. GNOME is
-    /// exempt: Mutter consumes raw touch natively and does its own gestures.
     pub fn tick(&mut self) {
         let now = self.now();
         if let Sink::Uinput(s) = &mut self.sink {
@@ -211,14 +170,10 @@ impl DisplaySession {
         }
     }
 
-    /// Milliseconds since the session started, on a monotonic clock so no
-    /// wall-clock jump can misfire a gesture.
     fn now(&self) -> u64 {
         self.started.elapsed().as_millis() as u64
     }
 
-    /// Orderly teardown: stop the Mutter session (removes the monitor), kill
-    /// the encoder; `Guards` handles the rest on drop.
     pub async fn shutdown(mut self) {
         if let Some(enc) = self.encoder.take() {
             enc.shutdown().await;
@@ -235,12 +190,10 @@ impl Drop for DisplaySession {
     }
 }
 
-/// More pixels, more bits — anchored at 8 Mbit/s for 1080p, clamped to a
-/// range that stays comfortable on ordinary Wi-Fi.
 fn bitrate_kbps(width: u32, height: u32) -> u32 {
     let px = u64::from(width) * u64::from(height);
-    let kbps = px * 8000 / (1920 * 1080);
-    (kbps as u32).clamp(3000, 16000)
+    let kbps = px * 12000 / (1920 * 1080);
+    (kbps as u32).clamp(4000, 24000)
 }
 
 pub(crate) fn has_cmd(name: &str) -> bool {
@@ -274,9 +227,10 @@ mod tests {
 
     #[test]
     fn bitrate_scales_with_the_pixel_count() {
-        assert_eq!(bitrate_kbps(1920, 1080), 8000);
-        assert!(bitrate_kbps(1280, 800) < 8000);
-        assert!(bitrate_kbps(2560, 1600) > 8000);
-        assert!(bitrate_kbps(3840, 2400) <= 16000);
+        assert_eq!(bitrate_kbps(1920, 1080), 12000);
+        assert!(bitrate_kbps(1280, 800) < 12000);
+        assert!(bitrate_kbps(1280, 800) >= 4000);
+        assert!(bitrate_kbps(2560, 1600) > 12000);
+        assert!(bitrate_kbps(3840, 2400) <= 24000);
     }
 }

@@ -1,17 +1,3 @@
-//! Tiny UDP beacon so a phone can find this PC again after its IP changed.
-//!
-//! mDNS is the nice way to do this, but plenty of routers and "guest" or
-//! "AP isolation" Wi-Fi profiles drop multicast, and Android's NsdManager can
-//! take a couple of seconds to resolve. A one-datagram broadcast probe answers
-//! in a few milliseconds and works everywhere broadcast works, which in
-//! practice is everywhere the two devices can reach each other at all.
-//!
-//! Protocol: the phone sends `LINUXLINK?v1` to UDP 47101 (broadcast), we reply
-//! with a small JSON object. Nothing secret goes out — the fingerprint is
-//! public information, and it is what lets the phone recognise *its* PC among
-//! several on the same network.
-//!
-//! Cost when idle: one socket blocked in `recv_from`. No timer, no wakeups.
 
 use crate::identity::Identity;
 use anyhow::Result;

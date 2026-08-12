@@ -45,12 +45,6 @@ pub fn download_dir() -> PathBuf {
     dir
 }
 
-/// A file name straight off the network must never be able to place a file
-/// outside the download directory. `PathBuf::join` replaces the whole path
-/// when handed an absolute one, and happily walks `..` — so keep only the
-/// final path component and refuse the pieces that mean something to a
-/// filesystem. Defense in depth: the sender is a paired device, but a paired
-/// device should still not be able to overwrite `~/.bashrc`.
 fn sanitize_name(name: &str) -> String {
     let base = std::path::Path::new(name)
         .file_name()
@@ -89,16 +83,13 @@ mod tests {
 
     #[test]
     fn network_names_cannot_leave_the_download_directory() {
-        // Traversal and absolute paths collapse to their last component.
         assert_eq!(sanitize_name("../../.bashrc"), ".bashrc");
         assert_eq!(sanitize_name("/home/user/.ssh/authorized_keys"), "authorized_keys");
         assert_eq!(sanitize_name("a/b/c.txt"), "c.txt");
-        // Names with no usable component fall back to something harmless.
         assert_eq!(sanitize_name(""), "file");
         assert_eq!(sanitize_name(".."), "file");
         assert_eq!(sanitize_name("."), "file");
         assert_eq!(sanitize_name("/"), "file");
-        // Ordinary names pass through untouched.
         assert_eq!(sanitize_name("Photo 2026-08-06.jpg"), "Photo 2026-08-06.jpg");
         assert_eq!(sanitize_name("rapport.final.pdf"), "rapport.final.pdf");
     }

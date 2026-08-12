@@ -31,10 +31,6 @@ struct Status {
     charging: bool,
     #[serde(default)]
     proximity: bool,
-    /// Not in the file: the daemon used to stamp `status.json` every two
-    /// seconds so we could treat a stale timestamp as "service stopped". That
-    /// heartbeat cost a disk write every two seconds forever, so it is gone —
-    /// we now ask the daemon directly by knocking on its control socket.
     #[serde(skip)]
     alive: bool,
 }
@@ -83,9 +79,6 @@ fn socket_path() -> PathBuf {
         .join("linuxlink.sock")
 }
 
-/// The daemon holds this socket open for as long as it lives, and the kernel
-/// refuses the connection the moment it dies — a truthful liveness check that
-/// costs nothing while idle.
 fn daemon_running() -> bool {
     std::os::unix::net::UnixStream::connect(socket_path()).is_ok()
 }
@@ -250,8 +243,6 @@ impl Tray for LinkTray {
             }
         }
 
-        // The second screen, started from here rather than from the tablet:
-        // the whole point is not having to pick the tablet up first.
         match connected.len() {
             0 => items.push(
                 StandardItem {
@@ -532,9 +523,6 @@ fn send_file_dialog(target_fp: Option<String>) {
     });
 }
 
-/// Opens the settings window, next to our own binary first — the tray app is
-/// normally launched by an absolute path from the autostart entry, so `$PATH`
-/// may not contain `~/.local/bin` at all.
 fn open_settings() {
     std::thread::spawn(|| {
         let sibling = std::env::current_exe()
@@ -595,10 +583,6 @@ fn pair_new_device() {
 
 #[tokio::main]
 async fn main() {
-    // At session login we are often started BEFORE the desktop's tray support
-    // is ready (on GNOME the AppIndicator extension loads a few seconds after
-    // autostart apps). So instead of giving up, keep retrying quietly: the
-    // icon then appears by itself as soon as the tray becomes available.
     let mut attempts = 0u32;
     'session: loop {
         let handle = loop {
@@ -614,7 +598,6 @@ async fn main() {
                     if attempts == 1 {
                         eprintln!("Tray not ready yet ({e}) — retrying…");
                     }
-                    // ~10 minutes of patience, then a clear message.
                     if attempts >= 200 {
                         eprintln!(
                             "Cannot display the system tray icon: {e}\n\
@@ -633,18 +616,12 @@ async fn main() {
         loop {
             tokio::time::sleep(Duration::from_secs(2)).await;
 
-            // The tray host (the shell or the bar) may have restarted while we
-            // were asleep. Checking the handle is free; it used to be inferred
-            // from a failed update, which meant issuing one every two seconds.
             if handle.is_closed() {
                 eprintln!("Tray connection lost — reconnecting…");
                 tokio::time::sleep(Duration::from_secs(3)).await;
                 continue 'session;
             }
 
-            // Reading a 300-byte file is nothing; redrawing the icon is a D-Bus
-            // round trip plus a repaint in the shell. Only do it when the state
-            // has actually moved.
             let next = read_status();
             if next == shown {
                 continue;

@@ -35,24 +35,7 @@ import kotlin.math.cos
 import kotlin.math.min
 import kotlin.math.sin
 
-/**
- * The tablet as a second monitor.
- *
- * The heavy lifting happens on the PC: it creates a real virtual monitor,
- * encodes it to H.264 and streams access units down the existing encrypted
- * QUIC connection. This activity is deliberately dumb — decode to a surface,
- * report every touch/pen/key back as a compact JSON line, reconnect when the
- * link hiccups. Latency lives and dies here, so the decoder runs in
- * low-latency mode and never queues more than the codec asks for.
- *
- * Two things are not dumb, because they cannot be: the geometry negotiation
- * (the PC may hand back a monitor of a different size than we asked for, and
- * the picture must then be letterboxed so pointer coordinates still land where
- * the user aimed) and the on-screen toolbar, which gives a keyboard-less
- * tablet the modifiers and the escape hatches a desktop takes for granted.
- */
 class SecondScreenActivity : Activity(), SurfaceHolder.Callback {
-
     private lateinit var root: FrameLayout
     private lateinit var surface: SurfaceView
     private lateinit var status: TextView
@@ -63,17 +46,14 @@ class SecondScreenActivity : Activity(), SurfaceHolder.Callback {
     private var ioThread: Thread? = null
     private var channel: LinkClient.DisplayChannel? = null
 
-    /** The monitor the PC actually created, in its own pixels. */
     @Volatile
     private var videoW = 0
 
     @Volatile
     private var videoH = 0
 
-    /** Latched modifiers: evdev keycode → the key that latched it. */
     private val latched = LinkedHashMap<Int, TextView>()
 
-    /** Input events leave on their own thread so touch handling never blocks. */
     private val sender = Executors.newSingleThreadExecutor()
 
     override fun onCreate(savedInstanceState: Bundle?) {
@@ -103,7 +83,6 @@ class SecondScreenActivity : Activity(), SurfaceHolder.Callback {
                 Gravity.CENTER
             )
         )
-        // Invisible, but it is what the soft keyboard attaches to.
         keyTarget = KeyTarget(this)
         root.addView(keyTarget, FrameLayout.LayoutParams(1, 1))
         buildToolbar()
@@ -130,14 +109,6 @@ class SecondScreenActivity : Activity(), SurfaceHolder.Callback {
         }
     }
 
-    // ---------------------------------------------------------- toolbar --
-
-    /**
-     * A translucent strip of the keys a tablet does not have. The modifiers
-     * latch — tap Ctrl, then tap the screen, and the PC sees a Ctrl+click —
-     * because there is no other way to hold a key while touching something
-     * with the same hand.
-     */
     private fun buildToolbar() {
         bar = LinearLayout(this).apply {
             orientation = LinearLayout.HORIZONTAL
@@ -230,7 +201,6 @@ class SecondScreenActivity : Activity(), SurfaceHolder.Callback {
 
     private fun dp(v: Int) = (v * resources.displayMetrics.density).toInt()
 
-    /** Releases every latched modifier, so nothing stays stuck on the PC. */
     private fun clearLatched() {
         for ((code, view) in latched) {
             view.background = pill(KEY_BG)
@@ -250,12 +220,6 @@ class SecondScreenActivity : Activity(), SurfaceHolder.Callback {
         }
     }
 
-    /**
-     * The view the IME talks to. Declaring `TYPE_NULL` asks the keyboard to
-     * send raw key events rather than commit text: the PC then applies its own
-     * layout, so an AZERTY desktop stays AZERTY even though Android believes
-     * it is typing on something else.
-     */
     private inner class KeyTarget(ctx: Context) : View(ctx) {
         init {
             isFocusable = true
@@ -271,8 +235,6 @@ class SecondScreenActivity : Activity(), SurfaceHolder.Callback {
             return BaseInputConnection(this, false)
         }
     }
-
-    // ------------------------------------------------------------ session --
 
     override fun surfaceCreated(holder: SurfaceHolder) {
         running.set(true)
@@ -291,11 +253,6 @@ class SecondScreenActivity : Activity(), SurfaceHolder.Callback {
         ioThread = null
     }
 
-    /**
-     * Connect → decode until the stream dies → reconnect. IO errors mean the
-     * link blinked (PC rebooting, Wi-Fi roaming) and deserve a retry; an
-     * explicit `display_error` from the daemon means retrying cannot help.
-     */
     private fun sessionLoop(holder: SurfaceHolder) {
         while (running.get()) {
             val client = LinkForegroundService.activeClient
@@ -319,8 +276,6 @@ class SecondScreenActivity : Activity(), SurfaceHolder.Callback {
                     post("PC error: ${reply.optString("reason")}")
                     return
                 }
-                // The daemon rounds, clamps and sometimes flat out disagrees;
-                // its answer is the truth the decoder and the pointer must use.
                 videoW = reply.optInt("width", w)
                 videoH = reply.optInt("height", h)
                 fitVideo(videoW, videoH)
@@ -340,15 +295,6 @@ class SecondScreenActivity : Activity(), SurfaceHolder.Callback {
         }
     }
 
-    /**
-     * The size of monitor to ask for.
-     *
-     * The desktop treats the virtual monitor as an ordinary 1× output, so
-     * asking a 300 dpi tablet for every one of its pixels produces microscopic
-     * menus and a stream nobody's Wi-Fi enjoys. Past [NATIVE_LIMIT] the
-     * request is halved, which is both a comfortable desktop size and an exact
-     * integer scale on the way back up.
-     */
     private fun requestedSize(): Pair<Int, Int> {
         var w = root.width
         var h = root.height
@@ -360,11 +306,6 @@ class SecondScreenActivity : Activity(), SurfaceHolder.Callback {
         return (w / 2) * 2 to (h / 2) * 2
     }
 
-    /**
-     * Letterboxes the surface to the monitor's aspect ratio. Without this a
-     * 16:10 monitor stretched over a 4:3 tablet would put the pointer a
-     * centimetre away from the finger that asked for it.
-     */
     private fun fitVideo(vw: Int, vh: Int) = runOnUiThread {
         if (vw <= 0 || vh <= 0 || root.width == 0 || root.height == 0) return@runOnUiThread
         val scale = min(root.width.toFloat() / vw, root.height.toFloat() / vh)
@@ -375,20 +316,13 @@ class SecondScreenActivity : Activity(), SurfaceHolder.Callback {
         surface.layoutParams = lp
     }
 
-    /** Feeds length-prefixed H.264 access units into a low-latency decoder. */
     private fun decode(ch: LinkClient.DisplayChannel, holder: SurfaceHolder) {
         val format = MediaFormat.createVideoFormat("video/avc", videoW, videoH).apply {
             if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.R) {
                 setInteger(MediaFormat.KEY_LOW_LATENCY, 1)
             }
-            // Realtime priority and an operating rate far above the actual
-            // frame rate tell the codec to decode as fast as it can instead
-            // of pacing itself against presentation timestamps.
             setInteger(MediaFormat.KEY_PRIORITY, 0)
             setFloat(MediaFormat.KEY_OPERATING_RATE, 240f)
-            // Vendor spellings of "low latency" for firmwares that predate or
-            // ignore the standard key. Unknown keys are simply ignored, and
-            // runCatching keeps any exotic OEM parser from hurting us.
             runCatching { setInteger("vendor.qti-ext-dec-low-latency.enable", 1) }
             runCatching { setInteger("vendor.rtc-ext-dec-low-latency.enable", 1) }
             runCatching { setInteger("vendor.hisi-ext-low-latency-video-dec.video-scene-for-low-latency-req", 1) }
@@ -424,7 +358,7 @@ class SecondScreenActivity : Activity(), SurfaceHolder.Callback {
                 input.readFully(unit)
 
                 val index = codec.dequeueInputBuffer(100_000)
-                if (index < 0) continue // codec busy — drop, never queue latency
+                if (index < 0) continue
                 codec.getInputBuffer(index)?.apply { clear(); put(unit) }
                 codec.queueInputBuffer(index, 0, len, pts, 0)
                 pts += 16_666
@@ -436,7 +370,6 @@ class SecondScreenActivity : Activity(), SurfaceHolder.Callback {
         }
     }
 
-    /** One text line before the binary stream starts. */
     private fun readLine(input: java.io.InputStream): String {
         val sb = StringBuilder()
         while (true) {
@@ -446,8 +379,6 @@ class SecondScreenActivity : Activity(), SurfaceHolder.Callback {
             sb.append(b.toChar())
         }
     }
-
-    // -------------------------------------------------------------- input --
 
     private fun send(obj: JSONObject) {
         val ch = channel ?: return
@@ -464,12 +395,6 @@ class SecondScreenActivity : Activity(), SurfaceHolder.Callback {
 
     private val where = IntArray(2)
 
-    /**
-     * Window coordinates → the monitor's own [0,1] square. The surface is
-     * letterboxed, so its offset inside the window matters; a touch on a black
-     * band clamps to the nearest edge, exactly like a mouse hitting the border
-     * of a screen.
-     */
     private fun norm(x: Float, y: Float): Pair<Double, Double> {
         surface.getLocationInWindow(where)
         val w = surface.width.coerceAtLeast(1)
@@ -524,12 +449,6 @@ class SecondScreenActivity : Activity(), SurfaceHolder.Callback {
         return true
     }
 
-    /**
-     * One stylus sample. Android reports tilt as a single angle from the
-     * vertical plus the direction it leans in; a digitizer wants that split
-     * into two per-axis angles, which is the spherical-to-Cartesian turn
-     * below. Positive X leans right, positive Y leans towards the user.
-     */
     private fun pen(event: MotionEvent, down: Boolean, inRange: Boolean) {
         val i = if (event.actionIndex < event.pointerCount) event.actionIndex else 0
         val (u, v) = norm(event.getX(i), event.getY(i))
@@ -558,8 +477,6 @@ class SecondScreenActivity : Activity(), SurfaceHolder.Callback {
             else -> false
         }
         when (event.actionMasked) {
-            // A hovering stylus keeps the tablet tool in range: that is what
-            // makes a brush preview follow the pen before it touches down.
             MotionEvent.ACTION_HOVER_ENTER, MotionEvent.ACTION_HOVER_MOVE,
             MotionEvent.ACTION_HOVER_EXIT -> {
                 if (stylus) {
@@ -583,7 +500,6 @@ class SecondScreenActivity : Activity(), SurfaceHolder.Callback {
     }
 
     override fun dispatchKeyEvent(event: KeyEvent): Boolean {
-        // The system keeps its own keys; a hardware keyboard types on the PC.
         when (event.keyCode) {
             KeyEvent.KEYCODE_BACK, KeyEvent.KEYCODE_HOME,
             KeyEvent.KEYCODE_VOLUME_UP, KeyEvent.KEYCODE_VOLUME_DOWN,
@@ -596,8 +512,6 @@ class SecondScreenActivity : Activity(), SurfaceHolder.Callback {
         }
         return true
     }
-
-    // ------------------------------------------------------------- plumbing --
 
     private fun post(text: String) {
         runOnUiThread {
@@ -615,7 +529,6 @@ class SecondScreenActivity : Activity(), SurfaceHolder.Callback {
 
     override fun onPause() {
         super.onPause()
-        // Leaving with Ctrl held would poison the PC's keyboard state.
         clearLatched()
     }
 
@@ -629,18 +542,15 @@ class SecondScreenActivity : Activity(), SurfaceHolder.Callback {
     companion object {
         private const val TAG = "SecondScreen"
 
-        /** Above this many pixels on the long edge, ask for half the tablet. */
         private const val NATIVE_LIMIT = 2048
 
         private val KEY_BG = 0xFF2E2E36L.toInt()
         private val KEY_ON = 0xFF3F7BE0L.toInt()
 
-        /** Label → evdev keycode, for the keys that latch. */
         private val MODIFIERS = listOf(
             "Ctrl" to 29, "Alt" to 56, "Shift" to 42, "Super" to 125
         )
 
-        /** Label → evdev keycode, for the keys that fire once. */
         private val ONE_SHOTS = listOf("Esc" to 1, "Tab" to 15)
     }
 }

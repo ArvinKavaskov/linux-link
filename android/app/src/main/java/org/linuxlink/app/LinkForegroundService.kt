@@ -25,7 +25,6 @@ import kotlinx.coroutines.launch
 import kotlinx.coroutines.withTimeoutOrNull
 
 class LinkForegroundService : Service() {
-
     private val scope = CoroutineScope(SupervisorJob() + Dispatchers.IO)
     private var connectionJob: Job? = null
     private var client: LinkClient? = null
@@ -35,12 +34,9 @@ class LinkForegroundService : Service() {
     private var dndReceiver: android.content.BroadcastReceiver? = null
     private var netMonitor: NetworkMonitor? = null
     private var syncWatcher: SyncWatcher? = null
-    /** One tick whenever a watched folder changes; conflated on purpose. */
     private val syncWakeups = Channel<Unit>(Channel.CONFLATED)
     @Volatile private var dndFromPc = false
-    /** True between a successful handshake and the connection dropping. */
     @Volatile private var connected = false
-    /** The PC's BLE beacon is out of range — we are probably not home. */
     @Volatile private var bleAway = false
 
     override fun onBind(intent: Intent?): IBinder? = null
@@ -62,8 +58,6 @@ class LinkForegroundService : Service() {
                 }
             }
             ACTION_RECONNECT -> {
-                // The user picked another PC on the home screen: drop the old
-                // link and dial the (newly saved) active one.
                 disconnect()
                 startAsForeground("Switching PC…")
                 connect()
@@ -119,10 +113,6 @@ class LinkForegroundService : Service() {
                     startDndSync()
                     attempt = 0
                     coroutineScope {
-                        // No more 15 s ping loop: the PC's QUIC keep-alive already
-                        // holds the NAT binding open and detects a dead link. We
-                        // only probe when something suggests we may have missed a
-                        // disconnection — screen on, Wi-Fi change.
                         launch {
                             var seq = 0L
                             while (isActive) {
@@ -144,11 +134,6 @@ class LinkForegroundService : Service() {
                     linkUp = false
                     c.close()
                     attempt++
-                    // Several distros, one phone: if the machine we are
-                    // dialling stays silent but another *known* PC answers the
-                    // discovery broadcast, that one is plainly the PC of the
-                    // moment. Switch to it and keep the loop going — pinning
-                    // still applies, only already-trusted fingerprints match.
                     if (attempt == 2) {
                         val others = KnownPcs.list(this@LinkForegroundService)
                             .filterNot { it.fingerprint.equals(pc.fingerprint, ignoreCase = true) }
@@ -161,10 +146,6 @@ class LinkForegroundService : Service() {
                             attempt = 0
                         }
                     }
-                    // Out of Bluetooth range *and* unreachable over the network
-                    // after several tries: we have left the house. Stand down
-                    // rather than probe the Wi-Fi every twenty seconds all day —
-                    // the companion service wakes us the moment we come back.
                     if (bleAway && attempt >= 4) {
                         Log.i(TAG, "PC out of reach and out of range — standing down")
                         stopSelf()
@@ -178,16 +159,6 @@ class LinkForegroundService : Service() {
         }
     }
 
-    /**
-     * Dials the PC, fastest route first.
-     *
-     * The stored address is right the overwhelming majority of the time, so it
-     * gets a 1.2 s fuse — long enough on any sane LAN, short enough that being
-     * wrong is barely noticeable. If it fails we ask [PcLocator], which answers
-     * in a few dozen milliseconds when the daemon is on the network at all.
-     *
-     * @return the address that worked, and the PC's name.
-     */
     private suspend fun openConnection(c: LinkClient, pc: PairedPc): Pair<String, String> {
         if (pc.lastAddress.isNotEmpty()) {
             try {
@@ -211,12 +182,6 @@ class LinkForegroundService : Service() {
         error("PC not found on this network")
     }
 
-    /**
-     * Retry immediately the first two times — a dropped connection is usually a
-     * transient blip and reconnecting takes a few dozen milliseconds. Only back
-     * off once it is clear the PC really is away, and never past 20 s, because
-     * [NetworkMonitor] cuts the wait short as soon as anything changes.
-     */
     private fun reconnectDelay(attempt: Int): Long = when (attempt) {
         1, 2 -> 0L
         3 -> 300L
@@ -226,19 +191,10 @@ class LinkForegroundService : Service() {
         else -> 20_000L
     }
 
-    /** Sleeps, but wakes early on a network or screen-on event. */
     private suspend fun waitBeforeRetry(monitor: NetworkMonitor, ms: Long) {
         withTimeoutOrNull(ms) { monitor.wakeups.receive() }
     }
 
-    /**
-     * Folder sync runs once on connect, then whenever a watched folder actually
-     * changes, with a two-hour safety net for anything the watches missed
-     * (a file created deeper than [SyncWatcher] looks, typically).
-     *
-     * v2 walked every sync folder every five minutes whether or not anything
-     * had happened — the single biggest thing Linux Link did to the battery.
-     */
     private suspend fun syncLoop(c: LinkClient) {
         if (!SyncFolder.isEnabled(this) || !SyncFolder.hasAllFilesAccess()) return
         startSyncWatcher()
@@ -248,8 +204,6 @@ class LinkForegroundService : Service() {
                 catch (e: Exception) { Log.w(TAG, "sync ${pair.id} : ${e.message}") }
             }
             withTimeoutOrNull(2 * 60 * 60_000) { syncWakeups.receive() }
-            // Copying a folder in fires one event per file; wait for the dust
-            // to settle so we transfer once rather than after every file.
             delay(10_000)
             while (syncWakeups.tryReceive().isSuccess) { /* drain the burst */ }
         }
@@ -599,21 +553,8 @@ class LinkForegroundService : Service() {
         }
     }
 
-    /**
-     * The PC offered its second screen.
-     *
-     * Android forbids a background app from opening a window, with two ways
-     * out. "Display over other apps" — which this app already asks for — lifts
-     * the ban outright, and then the screen simply appears, which is the whole
-     * promise: you never pick the tablet up. Without it the offer arrives as a
-     * full-screen-intent notification: the tablet opens straight into the
-     * second screen if it is locked, and shows a one-tap card if it is not.
-     */
     private fun openSecondScreen() {
         if (!AppPrefs.secondScreenEnabled(this)) {
-            // The PC offered its display but this device has the feature off
-            // (the phone default). Say so quietly instead of doing nothing —
-            // silence after a click on the PC would read as a bug.
             val channelId = "link_screen"
             val nm = getSystemService(NotificationManager::class.java)
             nm.createNotificationChannel(
@@ -755,10 +696,6 @@ class LinkForegroundService : Service() {
         var activeClient: LinkClient? = null
             private set
 
-        /**
-         * Observable mirror of the handshake state, for the home screen. The
-         * service owns the truth; the UI only ever reads it.
-         */
         var linkUp by mutableStateOf(false)
             private set
         private const val CHANNEL_ID = "link_connection"

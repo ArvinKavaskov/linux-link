@@ -13,21 +13,12 @@ import java.security.MessageDigest
 import java.time.Duration
 
 class LinkClient(private val identity: Identity) {
-
     private var connection: QuicClientConnection? = null
     private var writer: java.io.OutputStream? = null
     private var reader: BufferedReader? = null
 
     var expectedFingerprint: String? = null
 
-    /**
-     * Opens the QUIC connection.
-     *
-     * [timeoutMillis] is deliberately a parameter: the reconnection loop tries
-     * the last known address with a very short fuse (about a second) so that a
-     * PC which has moved to a different IP costs us one second, not eight,
-     * before we start looking for it properly.
-     */
     suspend fun connect(host: String, port: Int, timeoutMillis: Long = 8_000) {
         withContext(Dispatchers.IO) {
             val conn = QuicClientConnection.newBuilder()
@@ -37,8 +28,6 @@ class LinkClient(private val identity: Identity) {
                 .clientCertificate(identity.certificate)
                 .clientCertificateKey(identity.privateKey)
                 .connectTimeout(Duration.ofMillis(timeoutMillis))
-                // The PC sends a keep-alive every 20 s (6 s with proximity lock
-                // on), so 90 s of silence really does mean the link is gone.
                 .maxIdleTimeout(Duration.ofSeconds(90))
                 .build()
             conn.connect()
@@ -52,8 +41,6 @@ class LinkClient(private val identity: Identity) {
 
     private fun verifyServerFingerprint(conn: QuicClientConnection) {
         val expected = expectedFingerprint ?: return
-        // A missing chain must fail closed: skipping the check because the
-        // server presented nothing would defeat the pinning entirely.
         val serverCert = conn.serverCertificateChain?.firstOrNull()
             ?: error("The PC presented no certificate. Refusing the connection.")
         val actual = MessageDigest.getInstance("SHA-256")
@@ -186,11 +173,6 @@ class LinkClient(private val identity: Identity) {
         return WebcamWriter(out)
     }
 
-    /**
-     * Asks the PC to become one speaker richer. Returns the stream the PC
-     * pushes raw PCM into — the mirror image of [openMic]: there we produce
-     * and the PC consumes, here the PC produces and we play.
-     */
     fun openSpeaker(sampleRate: Int, channels: Int): java.io.InputStream {
         val conn = connection ?: error("not connected")
         val stream = conn.createStream(true)
@@ -203,15 +185,8 @@ class LinkClient(private val identity: Identity) {
         return stream.inputStream
     }
 
-    /** Both directions of a second-screen session, over one QUIC stream. */
     class DisplayChannel(val input: java.io.InputStream, val output: java.io.OutputStream)
 
-    /**
-     * Asks the PC to grow a virtual monitor of the given size. The PC answers
-     * with one JSON line (`display_ready` or `display_error`) followed by
-     * length-prefixed H.264 access units; we send input events back as JSON
-     * lines on the same stream.
-     */
     fun openDisplay(width: Int, height: Int, fps: Int): DisplayChannel {
         val conn = connection ?: error("not connected")
         val stream = conn.createStream(true)

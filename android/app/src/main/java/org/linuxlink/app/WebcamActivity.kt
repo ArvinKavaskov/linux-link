@@ -19,7 +19,6 @@ import java.io.ByteArrayOutputStream
 import java.util.concurrent.Executors
 
 class WebcamActivity : androidx.activity.ComponentActivity() {
-
     private lateinit var previewView: PreviewView
     private val analysisExecutor = Executors.newSingleThreadExecutor()
     private var cameraProvider: ProcessCameraProvider? = null

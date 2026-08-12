@@ -150,12 +150,6 @@ private val LinkShapes = Shapes(
     extraLarge = RoundedCornerShape(30.dp),
 )
 
-/**
- * Monochrome by intent: white and near-blacks in light, true black and soft
- * whites in dark. Colour is reserved for meaning — the green dot of a live
- * link, the red of an error. Deliberately not Material You: the interface is
- * the same on every phone, and the same as the PC windows.
- */
 @Composable
 private fun LinkTheme(content: @Composable () -> Unit) {
     val colors = if (isSystemInDarkTheme()) LinkDark else LinkLight
@@ -163,7 +157,6 @@ private fun LinkTheme(content: @Composable () -> Unit) {
 }
 
 class MainActivity : ComponentActivity() {
-
     private var status by mutableStateOf("No PC paired")
     private var pendingPairing: QrPayload? = null
     private val uiScope = CoroutineScope(Dispatchers.Main)
@@ -171,7 +164,6 @@ class MainActivity : ComponentActivity() {
     private var speakerOn by mutableStateOf(false)
     private var micOn by mutableStateOf(false)
 
-    /** Everything the home screen reflects; recomputed on every resume. */
     private var pairedName by mutableStateOf<String?>(null)
     private var autoClipOn by mutableStateOf(false)
     private var shizukuOk by mutableStateOf(false)
@@ -222,10 +214,6 @@ class MainActivity : ComponentActivity() {
         }
     }
 
-    /**
-     * Nothing to configure yet, so nothing to show: the first screen is the
-     * one action that makes everything else exist.
-     */
     @Composable
     private fun OnboardingScreen() {
         Surface(Modifier.fillMaxSize(), color = MaterialTheme.colorScheme.background) {
@@ -438,10 +426,6 @@ class MainActivity : ComponentActivity() {
         }
     }
 
-    /**
-     * The one card that never lies: a breathing dot, the PC's name, and —
-     * only when something is wrong — the way to fix it.
-     */
     @Composable
     private fun ConnectionCard() {
         val up = LinkForegroundService.linkUp
@@ -508,7 +492,6 @@ class MainActivity : ComponentActivity() {
         }
     }
 
-    /** A large tappable card for the app's flagship action. */
     @Composable
     private fun ActionCard(icon: ImageVector, title: String, sub: String, onClick: () -> Unit) {
         Card(
@@ -536,7 +519,6 @@ class MainActivity : ComponentActivity() {
         }
     }
 
-    /** One key of the remote: a tonal icon button that fills its share. */
     @Composable
     private fun RowScope.RemoteKey(
         icon: ImageVector,
@@ -554,7 +536,6 @@ class MainActivity : ComponentActivity() {
         }
     }
 
-    /** Title + one quiet line, a real switch on the right. */
     @Composable
     private fun SwitchRow(
         title: String,
@@ -584,11 +565,6 @@ class MainActivity : ComponentActivity() {
         }
     }
 
-    /**
-     * For the features that live behind a system permission: the row states
-     * the truth ("On" / "Off") and tapping it opens the way to change it —
-     * a switch that could not actually switch would be a small lie.
-     */
     @Composable
     private fun StateRow(
         title: String,
@@ -624,7 +600,6 @@ class MainActivity : ComponentActivity() {
         }
     }
 
-    /** A plain tappable row with a leading icon. */
     @Composable
     private fun ActionRow(icon: ImageVector, title: String, sub: String?, onClick: () -> Unit) {
         Row(
@@ -654,7 +629,6 @@ class MainActivity : ComponentActivity() {
         }
     }
 
-    /** Saves [pc] as the active PC and tells the service to redial. */
     private fun switchToPc(pc: PairedPc) {
         PairedPc.save(this, pc)
         status = "Switching to ${pc.name}…"
@@ -665,9 +639,7 @@ class MainActivity : ComponentActivity() {
         )
     }
 
-    /** Recomputes everything the home screen shows from the system's truth. */
     private fun refreshState() {
-        // Phones that paired before the registry existed get seeded here.
         PairedPc.load(this)?.let { KnownPcs.remember(this, it) }
         knownPcs = KnownPcs.list(this)
         activeFp = PairedPc.load(this)?.fingerprint ?: ""
@@ -694,9 +666,6 @@ class MainActivity : ComponentActivity() {
 
     override fun onResume() {
         super.onResume()
-        // Permission grants happen in system screens and the audio service
-        // flips its own switches off when a stream dies — coming back to the
-        // app is when every row catches up with reality.
         refreshState()
     }
 
@@ -753,9 +722,6 @@ class MainActivity : ComponentActivity() {
             try {
                 val identity = Identity.loadOrCreate(this@MainActivity)
                 val client = LinkClient(identity).also { it.expectedFingerprint = payload.fingerprint }
-                // The QR carries every address the PC answers on (Ethernet and
-                // Wi-Fi, typically). Try them in order instead of betting the
-                // whole pairing on the first one.
                 var host: String? = null
                 for (candidate in payload.addrs) {
                     try {
@@ -774,7 +740,6 @@ class MainActivity : ComponentActivity() {
                 val pc = PairedPc(pcName, address, payload.port, payload.fingerprint)
                 PairedPc.save(this@MainActivity, pc)
                 KnownPcs.remember(this@MainActivity, pc)
-                // Keep the others as fallbacks for the rediscovery path.
                 PcLocator.rememberAlternates(
                     this@MainActivity, payload.addrs.filter { it != address }
                 )

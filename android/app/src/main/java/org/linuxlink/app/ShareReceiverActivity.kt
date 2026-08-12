@@ -8,7 +8,6 @@ import android.widget.Toast
 import org.json.JSONObject
 
 class ShareReceiverActivity : Activity() {
-
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
 

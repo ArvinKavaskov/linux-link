@@ -1,12 +1,3 @@
-//! "Now playing" on the PC, mirrored to the phone's lock screen.
-//!
-//! v2 shelled out to `playerctl` every two seconds — 1 800 process spawns an
-//! hour to learn that nothing had changed. MPRIS is a D-Bus interface and D-Bus
-//! is event-driven, so we now listen for `PropertiesChanged` on
-//! `/org/mpris/MediaPlayer2` and do nothing at all in between.
-//!
-//! `playerctl` is no longer required at runtime; it is only used as a fallback
-//! for sending commands on the odd setup where the D-Bus call fails.
 
 use crate::clipboard::ClipboardHub;
 use crate::protocol::Message;
@@ -34,7 +25,6 @@ pub async fn apply(action: &str) {
         tracing::info!("⏯ PC media: {action}");
         return;
     }
-    // Fallback for players that are not on the session bus we can see.
     let arg = match action {
         "play_pause" => "play-pause",
         "next" => "next",
@@ -65,7 +55,6 @@ pub fn spawn_watcher(hub: Arc<ClipboardHub>) {
 async fn watch(hub: Arc<ClipboardHub>) -> anyhow::Result<()> {
     let conn = Connection::session().await?;
 
-    // Any player's property change, whoever it comes from.
     let rule = zbus::MatchRule::builder()
         .msg_type(zbus::message::Type::Signal)
         .interface("org.freedesktop.DBus.Properties")?
@@ -74,9 +63,6 @@ async fn watch(hub: Arc<ClipboardHub>) -> anyhow::Result<()> {
         .build();
     let mut props = zbus::MessageStream::for_match_rule(rule, &conn, Some(8)).await?;
 
-    // A player appearing or quitting is not a property change, so it needs its
-    // own subscription — otherwise closing Spotify would leave a ghost track on
-    // the phone's lock screen forever.
     let dbus = zbus::fdo::DBusProxy::new(&conn).await?;
     let mut names = dbus.receive_name_owner_changed().await?;
 
@@ -100,8 +86,6 @@ async fn watch(hub: Arc<ClipboardHub>) -> anyhow::Result<()> {
             }
         }
 
-        // Players such as VLC fire several signals for a single track change.
-        // A short settle window turns that burst into one push to the phone.
         tokio::time::sleep(std::time::Duration::from_millis(200)).await;
         while props.next().now_or_never().is_some() {}
 
@@ -123,8 +107,6 @@ async fn publish(
     hub.push(Message::MediaInfo { title, artist, playing }).await;
 }
 
-/// The bus name of the player worth showing: the one that is playing, or else
-/// the first one that has something loaded.
 async fn pick_player(conn: &Connection) -> Option<String> {
     let dbus = zbus::fdo::DBusProxy::new(conn).await.ok()?;
     let names = dbus.list_names().await.ok()?;
@@ -160,8 +142,6 @@ async fn read_player(conn: &Connection, dest: &str) -> Option<(String, String, b
     Some((title, artist, status.eq_ignore_ascii_case("Playing")))
 }
 
-/// MPRIS types the title as a string and the artist as an array of strings,
-/// except for the players that do not.
 fn first_string(v: &OwnedValue) -> Option<String> {
     match &**v {
         Value::Str(s) => Some(s.to_string()),

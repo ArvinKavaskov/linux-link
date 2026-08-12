@@ -68,10 +68,6 @@ pub enum Message {
     WebcamStart { width: u32, height: u32 },
     MicStart { sample_rate: u32, channels: u32 },
     SpeakerStart { sample_rate: u32, channels: u32 },
-    /// The PC offering the tablet a second screen. The tablet answers by
-    /// opening its second-screen view, which then dials back with
-    /// `DisplayStart` exactly like a session the user started by hand — the
-    /// invite only saves a trip through the app.
     DisplayInvite,
     DisplayStart {
         width: u32,

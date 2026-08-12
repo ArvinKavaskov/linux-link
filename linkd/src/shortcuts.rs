@@ -1,39 +1,14 @@
-//! Global keyboard shortcuts, registered in the desktop the user actually runs.
-//!
-//! There is no cross-desktop API for this — a program cannot simply "grab
-//! Super+Shift+V" on Wayland, and it should not be able to. What it can do is
-//! write the shortcut into the desktop's own configuration, which is exactly
-//! what the user would do by hand in the settings panel. So we do that, per
-//! desktop, and we do it reversibly.
-//!
-//! GNOME (and Zorin, Cinnamon, Budgie): a custom keybinding in
-//! `org.gnome.settings-daemon.plugins.media-keys`. The bindings live at
-//! individual dconf paths listed in a `custom-keybindings` array; we use named
-//! paths of our own (`…/custom-keybindings/linuxlink-clipboard/`) rather than
-//! the usual `custom0`, `custom1`… so we can never overwrite a shortcut the
-//! user created themselves.
-//!
-//! KDE Plasma: a `.desktop` entry carrying `X-KDE-Shortcuts`. kglobalaccel
-//! picks those up on its own.
-//!
-//! Hyprland: a `bind =` line in `hyprland.conf`, between two markers so we can
-//! take it out again.
 
 use anyhow::Result;
 use std::path::PathBuf;
 use std::process::Command;
 
-/// One shortcut: an id used in config paths, a label, the keys, the command.
 struct Shortcut {
     id: &'static str,
     name: &'static str,
-    /// GNOME/GTK syntax.
     binding: &'static str,
-    /// KDE syntax.
     kde: &'static str,
-    /// Hyprland syntax: modifiers, then key.
     hypr: (&'static str, &'static str),
-    /// `{bin}` is replaced by the absolute path to the binary directory.
     command: &'static str,
 }
 
@@ -106,8 +81,6 @@ pub fn desktop_name(d: Desktop) -> &'static str {
 }
 
 fn bin_dir() -> String {
-    // The shortcut has to survive `$PATH` not being set the way our shell sees
-    // it — dconf-launched commands get a very bare environment.
     std::env::current_exe()
         .ok()
         .and_then(|p| p.parent().map(|p| p.to_path_buf()))
@@ -145,7 +118,6 @@ pub fn remove() -> Result<()> {
     }
 }
 
-/// True when our shortcuts appear to be registered right now.
 pub fn installed() -> bool {
     match detect() {
         Desktop::Gnome => gnome_list()
@@ -167,8 +139,6 @@ pub fn manual_help() -> String {
     out
 }
 
-// ------------------------------------------------------------------ GNOME
-
 const MEDIA_KEYS: &str = "org.gnome.settings-daemon.plugins.media-keys";
 const CUSTOM_SCHEMA: &str = "org.gnome.settings-daemon.plugins.media-keys.custom-keybinding";
 const CUSTOM_ROOT: &str = "/org/gnome/settings-daemon/plugins/media-keys/custom-keybindings";
@@ -181,13 +151,11 @@ fn gsettings(args: &[&str]) -> Result<String> {
     Ok(String::from_utf8_lossy(&out.stdout).trim().to_string())
 }
 
-/// The `custom-keybindings` array, as a list of dconf paths.
 fn gnome_list() -> Result<Vec<String>> {
     let raw = gsettings(&["get", MEDIA_KEYS, "custom-keybindings"])?;
     Ok(parse_gvariant_list(&raw))
 }
 
-/// `['/a/', '/b/']` → `["/a/", "/b/"]`. `@as []` for an empty array.
 fn parse_gvariant_list(raw: &str) -> Vec<String> {
     raw.trim()
         .trim_start_matches("@as")
@@ -230,7 +198,6 @@ fn gnome_remove() -> Result<()> {
         .filter(|p| !SHORTCUTS.iter().any(|s| p.contains(s.id)))
         .collect();
     gsettings(&["set", MEDIA_KEYS, "custom-keybindings", &format_gvariant_list(&kept)])?;
-    // Also clear the values, so a reinstall does not inherit a stale command.
     for s in SHORTCUTS {
         let target = format!("{CUSTOM_SCHEMA}:{CUSTOM_ROOT}/{}/", s.id);
         let _ = gsettings(&["reset", &target, "binding"]);
@@ -239,8 +206,6 @@ fn gnome_remove() -> Result<()> {
     }
     Ok(())
 }
-
-// -------------------------------------------------------------------- KDE
 
 fn kde_file(id: &str) -> PathBuf {
     dirs::home_dir()
@@ -270,7 +235,6 @@ fn kde_install() -> Result<()> {
         );
         std::fs::write(&path, entry)?;
     }
-    // kglobalaccel only rescans when the menu cache is rebuilt.
     let _ = Command::new("kbuildsycoca6").status();
     let _ = Command::new("kbuildsycoca5").status();
     Ok(())
@@ -284,8 +248,6 @@ fn kde_remove() -> Result<()> {
     let _ = Command::new("kbuildsycoca5").status();
     Ok(())
 }
-
-// --------------------------------------------------------------- Hyprland
 
 fn hypr_conf() -> PathBuf {
     dirs::home_dir()
@@ -325,8 +287,6 @@ fn hyprland_remove() -> Result<()> {
     Ok(())
 }
 
-/// Removes a previous block of ours, markers included, leaving the rest of the
-/// user's config exactly as it was.
 fn strip_block(conf: &str) -> String {
     let mut out = String::new();
     let mut inside = false;

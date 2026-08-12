@@ -19,57 +19,25 @@ import java.net.InetAddress
 import java.net.NetworkInterface
 import java.net.SocketTimeoutException
 
-/**
- * Finds the PC again when its address has changed.
- *
- * Before v3 the phone only ever dialled the address it saw at pairing time.
- * The moment the router handed out a different lease the link was dead for
- * good and the only cure was to pair again — the single most annoying bug in
- * the whole project.
- *
- * Two independent channels, tried at the same time so the slow one never
- * holds up the fast one:
- *
- *  1. **UDP broadcast probe.** One datagram to port 47101, the daemon answers
- *     with its name, fingerprint and QUIC port. Typically back in under 20 ms,
- *     and it keeps working on networks where multicast is filtered.
- *  2. **mDNS** via [NsdManager] on `_linuxlink._udp`. Slower (a second or two)
- *     but survives the odd network where broadcast is the thing being dropped.
- *
- * Only replies carrying the fingerprint we are paired with are accepted, so a
- * second Linux Link PC on the same network can never hijack the connection.
- */
 object PcLocator {
-
     private const val TAG = "PcLocator"
     const val DISCOVERY_PORT = 47101
     private const val PROBE = "LINUXLINK?v1"
     private const val SERVICE_TYPE = "_linuxlink._udp"
 
-    /**
-     * Addresses worth dialling, best first. Never blocks for more than ~2.5 s
-     * and returns as soon as the UDP probe answers.
-     */
     suspend fun discover(context: Context, pc: PairedPc): List<String> = coroutineScope {
         val mdns = async { mdnsLookup(context, pc.fingerprint) }
         val udp = udpProbe(pc.fingerprint)
 
         val found = LinkedHashSet<String>()
         found += udp
-        // The broadcast answered — no reason to sit through the mDNS timeout.
         if (found.isEmpty()) found += mdns.await() else mdns.cancel()
         found += extraAddresses(context)
-        found.remove(pc.lastAddress) // already tried by the caller
+        found.remove(pc.lastAddress)
         if (found.isNotEmpty()) Log.i(TAG, "PC candidates: $found")
         found.toList()
     }
 
-    /**
-     * One broadcast, any answer whose fingerprint we already trust. This is
-     * the multi-PC heart: when the active PC is silent, whichever other known
-     * machine answers becomes the obvious thing to connect to. UDP only —
-     * this runs inside the retry path, where 1 s is already a long time.
-     */
     suspend fun discoverAny(context: Context, known: List<PairedPc>): PairedPc? =
         withContext(Dispatchers.IO) {
             if (known.isEmpty()) return@withContext null
@@ -112,8 +80,6 @@ object PcLocator {
             found
         }
 
-    // ---------------------------------------------------------------- UDP
-
     private suspend fun udpProbe(fingerprint: String): List<String> = withContext(Dispatchers.IO) {
         val out = mutableListOf<String>()
         runCatching {
@@ -148,7 +114,6 @@ object PcLocator {
         out
     }
 
-    /** The `x.y.z.255` of every interface we are on, plus the global broadcast. */
     private fun broadcastAddresses(): List<InetAddress> {
         val out = mutableListOf<InetAddress>()
         runCatching {
@@ -162,8 +127,6 @@ object PcLocator {
         runCatching { out += InetAddress.getByName("255.255.255.255") }
         return out
     }
-
-    // --------------------------------------------------------------- mDNS
 
     private suspend fun mdnsLookup(context: Context, fingerprint: String): List<String> =
         withTimeoutOrNull(2_500) { mdnsLookupInner(context, fingerprint) } ?: emptyList()
@@ -216,12 +179,6 @@ object PcLocator {
         }
     }
 
-    // ------------------------------------------------------------- extras
-
-    /**
-     * Addresses recorded at pairing time. The QR code carries up to two, so a
-     * PC that is on both Ethernet and Wi-Fi stays reachable if one goes down.
-     */
     private fun extraAddresses(context: Context): List<String> =
         context.getSharedPreferences("paired_pc", Context.MODE_PRIVATE)
             .getString("alt_addresses", "")

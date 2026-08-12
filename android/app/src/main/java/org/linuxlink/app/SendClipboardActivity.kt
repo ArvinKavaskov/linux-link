@@ -7,7 +7,6 @@ import android.widget.Toast
 import org.json.JSONObject
 
 class SendClipboardActivity : Activity() {
-
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
     }

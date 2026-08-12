@@ -108,11 +108,6 @@ impl TrustedPeers {
         Ok(())
     }
 
-    /// Removes a device. Returns the peer it was, if it was there at all — the
-    /// caller needs the full fingerprint to also drop a live connection.
-    ///
-    /// Accepts a fingerprint prefix so the settings window and the command line
-    /// can both work with the short form shown to the user.
     pub fn forget(&mut self, fingerprint: &str) -> Result<Option<Peer>> {
         let Some(pos) = self.peers.iter().position(|p| p.fingerprint.starts_with(fingerprint))
         else {

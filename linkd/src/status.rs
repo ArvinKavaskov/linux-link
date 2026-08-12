@@ -33,14 +33,6 @@ pub fn status_file() -> PathBuf {
     dir.join("status.json")
 }
 
-/// Keeps `status.json` in step with reality, for the tray icon to read.
-///
-/// v2 rebuilt this file every two seconds: a trusted-peers read from disk plus
-/// a write, 43 000 times a day, to say the same thing. Everything in here
-/// changes on an event — a phone connects, the battery moves, the proximity
-/// lock is toggled — so we park on the event bus and only write when the
-/// serialized content actually differs. The 30 s timeout is pure belt and
-/// braces in case something changes state without poking the bus.
 pub fn spawn(
     clipboard: Arc<ClipboardHub>,
     battery: Arc<BatteryStore>,

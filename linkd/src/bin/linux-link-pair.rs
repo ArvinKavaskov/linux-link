@@ -12,8 +12,6 @@ use std::time::Instant;
 
 const PAIR_WINDOW_SECS: u64 = 120;
 
-/// The QR card is white with near-black modules in both themes: that is not
-/// styling, it is what a phone camera locks onto fastest.
 const QR_CARD: Color32 = Color32::WHITE;
 const QR_MODULE: Color32 = Color32::from_rgb(0x14, 0x12, 0x1A);
 
@@ -87,7 +85,6 @@ struct QrRender {
 }
 
 fn build_qr(payload: &str) -> Option<QrRender> {
-    // Level M keeps the module count low -> bigger squares, easier to scan.
     let code = QrCode::with_error_correction_level(payload.as_bytes(), EcLevel::M).ok()?;
     let width = code.width();
     let dark = code
@@ -135,8 +132,6 @@ impl PairApp {
         let painter = ui.painter_at(rect.expand(4.0));
         painter.rect_filled(rect, Rounding::same(22.0), QR_CARD);
 
-        // Snap the module size to whole pixels so every square stays crisp
-        // (no anti-aliased gray edges the phone camera struggles with).
         let ppp = ui.ctx().pixels_per_point();
         let w = qr.width;
         let pad_min = card_size * 0.06;
@@ -207,8 +202,6 @@ impl eframe::App for PairApp {
                                     .size(12.5)
                                     .color(p.dim),
                             );
-                            // The remaining time as a quietly draining bar —
-                            // legible at a glance, no clock to read.
                             let left = PAIR_WINDOW_SECS
                                 .saturating_sub(since.elapsed().as_secs());
                             let frac =

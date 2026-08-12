@@ -12,16 +12,8 @@ use std::net::SocketAddr;
 use std::sync::Arc;
 use tokio::io::{AsyncBufReadExt, AsyncReadExt, AsyncWriteExt, BufReader};
 
-/// The longest JSON line we will buffer from the network. Clipboard text is
-/// the biggest legitimate payload and even a pasted novel stays far under
-/// this; without a cap, any device on the LAN — pairing not required, the TLS
-/// handshake accepts every certificate on purpose — could send gigabytes with
-/// no newline and grow our buffer without bound.
 const MAX_LINE_BYTES: u64 = 8 * 1024 * 1024;
 
-/// `read_line`, but a line longer than [`MAX_LINE_BYTES`] is an error instead
-/// of an allocation. Killing the stream is the right response: nothing
-/// legitimate ever comes close to the cap.
 async fn read_line_capped(
     reader: &mut BufReader<quinn::RecvStream>,
     line: &mut String,
@@ -34,10 +26,6 @@ async fn read_line_capped(
     Ok(n)
 }
 
-/// Everything a connection needs from the rest of the daemon. It travels as one
-/// handle because every layer below wants the same set, and threading seven
-/// separate `Arc`s through three call sites is noise, not information. Cloning
-/// it clones seven reference counts and nothing else.
 #[derive(Clone)]
 pub struct Services {
     pub identity: Arc<Identity>,
@@ -62,9 +50,6 @@ pub async fn serve(svc: Services, port: u16, fast_presence: bool) -> Result<()> 
                         tracing::warn!("connection ended with error: {e:#}");
                     }
                 }
-                // Routine on a LAN: a device probing a stale address, a port
-                // scanner, a tablet looking for its *other* PC. Not worth a
-                // warning every few seconds.
                 Err(e) => tracing::debug!("handshake failed: {e}"),
             }
         });
@@ -86,14 +71,6 @@ fn make_endpoint(identity: &Identity, port: u16, fast_presence: bool) -> Result<
 
     let mut server_config =
         quinn::ServerConfig::with_crypto(Arc::new(QuicServerConfig::try_from(tls)?));
-    // Every keep-alive packet wakes the phone's Wi-Fi radio, and the radio is
-    // by far the most expensive thing we can ask a phone to do. One packet
-    // every 3 s (the v2 setting) meant the radio never reached a deep sleep
-    // state; 20 s is still far inside any NAT binding timeout and cuts those
-    // wakeups by almost 7×.
-    //
-    // Proximity lock is the one feature that needs to *notice* the phone
-    // leaving quickly, so when it is on we trade some battery for a 6 s beat.
     let (keep_alive, idle) = if fast_presence { (6, 20) } else { (20, 60) };
     let mut transport = quinn::TransportConfig::default();
     transport.max_idle_timeout(Some(quinn::IdleTimeout::try_from(
@@ -106,14 +83,9 @@ fn make_endpoint(identity: &Identity, port: u16, fast_presence: bool) -> Result<
     Ok(quinn::Endpoint::server(server_config, addr)?)
 }
 
-/// Live connections by client fingerprint, so that forgetting a device can
-/// also cut its connection *now* — trust is cached for the life of a stream,
-/// and "forget" that only takes effect at the next reconnection would feel
-/// broken to anyone watching the tray.
 static LIVE: std::sync::LazyLock<std::sync::Mutex<Vec<(usize, String, quinn::Connection)>>> =
     std::sync::LazyLock::new(Default::default);
 
-/// Unregisters on drop, whatever way the connection handler exits.
 struct LiveGuard(usize);
 
 impl Drop for LiveGuard {
@@ -127,8 +99,6 @@ fn register_live(conn: &quinn::Connection, fp: &str) -> LiveGuard {
     LiveGuard(conn.stable_id())
 }
 
-/// Closes every live connection whose fingerprint starts with `fingerprint`
-/// (same prefix rule as `TrustedPeers::forget`). Returns how many were cut.
 pub fn kick(fingerprint: &str) -> usize {
     let mut live = LIVE.lock().unwrap();
     let before = live.len();
@@ -156,9 +126,6 @@ async fn handle_connection(conn: quinn::Connection, svc: Services) -> Result<()>
             Err(quinn::ConnectionError::ApplicationClosed(_))
             | Err(quinn::ConnectionError::ConnectionClosed(_))
             | Err(quinn::ConnectionError::LocallyClosed) => return Ok(()),
-            // The idle timeout *is* the presence mechanism: the phone going to
-            // sleep or out of range ends the connection this way every single
-            // day. A normal event, not an error.
             Err(quinn::ConnectionError::TimedOut) => {
                 tracing::info!("Connection from {remote} idle-timed out (device asleep or away)");
                 return Ok(());
@@ -202,11 +169,6 @@ async fn handle_stream(
         let trusted = session_trusted
             || peer_fp.map(|fp| TrustedPeers::load().map(|t| t.is_trusted(fp)).unwrap_or(false))
                 .unwrap_or(false);
-        // The fingerprint is fixed for the life of the TLS connection, so a
-        // stream that was trusted once is trusted until it closes. Without
-        // this, every clipboard line and battery tick re-read and re-parsed
-        // the peers file from disk. Revoking a device (`linkd forget`) drops
-        // its live connection, so the cache cannot outlive the trust.
         session_trusted = trusted;
 
         let reply = match msg {
@@ -449,9 +411,6 @@ async fn receive_webcam(reader: &mut BufReader<quinn::RecvStream>, mut feed: cra
     }
 }
 
-/// Pumps PCM from parec to the phone. The direction is the mirror of the mic:
-/// here the PC produces and the phone consumes. We also watch our receive side
-/// — the phone closing its end (or sending anything at all) is the stop signal.
 async fn stream_speaker(
     reader: &mut BufReader<quinn::RecvStream>,
     send: &mut quinn::SendStream,
@@ -481,18 +440,11 @@ async fn stream_speaker(
     }
 }
 
-/// The second-screen pump: H.264 access units go down (length-prefixed),
-/// input events come up (one JSON object per line). Either side going quiet
-/// — pipe EOF, stream reset, tablet gone — ends the session, and
-/// `DisplaySession::shutdown` folds the virtual monitor back up.
 async fn stream_display(
     reader: &mut BufReader<quinn::RecvStream>,
     send: &mut quinn::SendStream,
     mut session: crate::display::DisplaySession,
 ) {
-    // The video shares one QUIC connection with everything else. If a file
-    // transfer is running, the scheduler must never make a frame wait behind
-    // a megabyte of bulk data: raise this stream above the default priority.
     let _ = send.set_priority(1);
     let ready = format!(
         "{{\"type\":\"display_ready\",\"width\":{},\"height\":{}}}\n",
@@ -503,9 +455,6 @@ async fn stream_display(
         return;
     }
     let mut line = String::new();
-    // Gesture clock. A finger resting still sends nothing, so the long press
-    // is only ever noticed here. 50 ms is a tenth of the press threshold:
-    // imperceptible lag, negligible cost.
     let mut gestures = tokio::time::interval(std::time::Duration::from_millis(50));
     gestures.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
     loop {

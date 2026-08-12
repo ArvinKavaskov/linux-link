@@ -6,7 +6,6 @@ import com.journeyapps.barcodescanner.CaptureManager
 import com.journeyapps.barcodescanner.DecoratedBarcodeView
 
 class PairScanActivity : ComponentActivity() {
-
     private lateinit var capture: CaptureManager
     private lateinit var barcodeView: DecoratedBarcodeView
 

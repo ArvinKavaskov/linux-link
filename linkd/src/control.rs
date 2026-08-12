@@ -115,8 +115,6 @@ async fn handle(
                 Err(e) => tracing::warn!("send-file: {e:#}"),
             }
         } else if line == "SCREEN" || line.starts_with("SCREEN ") {
-            // "SCREEN" invites every connected tablet, "SCREEN <fingerprint>"
-            // just the one — the same shape as the file commands above.
             let fp = line["SCREEN".len()..].trim();
             tracing::info!("🖥 Second screen offered to {}", if fp.is_empty() { "phone(s)" } else { fp });
             if fp.is_empty() {
@@ -137,9 +135,6 @@ async fn handle(
     }
 }
 
-/// Drops a device from the trusted list and cuts its live connection on the
-/// spot. The phone keeps its certificate but it no longer buys anything:
-/// no more automatic reconnection until the user pairs it again.
 async fn forget_device(fingerprint: &str) -> String {
     if fingerprint.is_empty() {
         return "ERR no fingerprint\n".to_string();
@@ -216,7 +211,6 @@ pub async fn send_file(path: &str, to: Option<&str>) -> Result<()> {
     }
 }
 
-/// Offers the second screen to a tablet, or to every connected one.
 pub async fn second_screen(to: Option<&str>) -> Result<()> {
     match to {
         Some(fp) => send_line(&format!("SCREEN {fp}")).await,
@@ -261,7 +255,6 @@ pub async fn pair_live() -> Result<()> {
     Ok(())
 }
 
-/// Asks the daemon to forget a device and returns the name it had.
 pub async fn forget(fingerprint: &str) -> Result<String> {
     let path = socket_path();
     let stream = UnixStream::connect(&path).await.map_err(|e| {

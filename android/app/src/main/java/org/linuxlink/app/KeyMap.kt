@@ -2,18 +2,8 @@ package org.linuxlink.app
 
 import android.view.KeyEvent
 
-/**
- * Android KeyEvent keycodes → Linux evdev keycodes.
- *
- * The daemon injects whatever we send straight into the session (uinput or
- * Mutter, both speak evdev), so the translation happens once, here. Only keys
- * with an obvious physical identity are mapped — anything exotic falls
- * through and stays on the tablet.
- */
 object KeyMap {
-
     private val map = HashMap<Int, Int>(128).apply {
-        // Letters. Android A=29..Z=54; evdev is scattered, so spell it out.
         put(KeyEvent.KEYCODE_A, 30); put(KeyEvent.KEYCODE_B, 48); put(KeyEvent.KEYCODE_C, 46)
         put(KeyEvent.KEYCODE_D, 32); put(KeyEvent.KEYCODE_E, 18); put(KeyEvent.KEYCODE_F, 33)
         put(KeyEvent.KEYCODE_G, 34); put(KeyEvent.KEYCODE_H, 35); put(KeyEvent.KEYCODE_I, 23)
@@ -24,42 +14,36 @@ object KeyMap {
         put(KeyEvent.KEYCODE_V, 47); put(KeyEvent.KEYCODE_W, 17); put(KeyEvent.KEYCODE_X, 45)
         put(KeyEvent.KEYCODE_Y, 21); put(KeyEvent.KEYCODE_Z, 44)
 
-        // Digits row. Android 0=7..9=16; evdev 1=2..0=11.
         put(KeyEvent.KEYCODE_1, 2); put(KeyEvent.KEYCODE_2, 3); put(KeyEvent.KEYCODE_3, 4)
         put(KeyEvent.KEYCODE_4, 5); put(KeyEvent.KEYCODE_5, 6); put(KeyEvent.KEYCODE_6, 7)
         put(KeyEvent.KEYCODE_7, 8); put(KeyEvent.KEYCODE_8, 9); put(KeyEvent.KEYCODE_9, 10)
         put(KeyEvent.KEYCODE_0, 11)
 
-        // Whitespace and editing.
         put(KeyEvent.KEYCODE_SPACE, 57)
         put(KeyEvent.KEYCODE_ENTER, 28)
         put(KeyEvent.KEYCODE_NUMPAD_ENTER, 96)
-        put(KeyEvent.KEYCODE_DEL, 14)            // backspace
-        put(KeyEvent.KEYCODE_FORWARD_DEL, 111)   // delete
+        put(KeyEvent.KEYCODE_DEL, 14)
+        put(KeyEvent.KEYCODE_FORWARD_DEL, 111)
         put(KeyEvent.KEYCODE_TAB, 15)
         put(KeyEvent.KEYCODE_ESCAPE, 1)
         put(KeyEvent.KEYCODE_INSERT, 110)
 
-        // Modifiers.
         put(KeyEvent.KEYCODE_SHIFT_LEFT, 42); put(KeyEvent.KEYCODE_SHIFT_RIGHT, 54)
         put(KeyEvent.KEYCODE_CTRL_LEFT, 29); put(KeyEvent.KEYCODE_CTRL_RIGHT, 97)
         put(KeyEvent.KEYCODE_ALT_LEFT, 56); put(KeyEvent.KEYCODE_ALT_RIGHT, 100)
         put(KeyEvent.KEYCODE_META_LEFT, 125); put(KeyEvent.KEYCODE_META_RIGHT, 126)
         put(KeyEvent.KEYCODE_CAPS_LOCK, 58)
 
-        // Navigation.
         put(KeyEvent.KEYCODE_DPAD_UP, 103); put(KeyEvent.KEYCODE_DPAD_DOWN, 108)
         put(KeyEvent.KEYCODE_DPAD_LEFT, 105); put(KeyEvent.KEYCODE_DPAD_RIGHT, 106)
         put(KeyEvent.KEYCODE_MOVE_HOME, 102); put(KeyEvent.KEYCODE_MOVE_END, 107)
         put(KeyEvent.KEYCODE_PAGE_UP, 104); put(KeyEvent.KEYCODE_PAGE_DOWN, 109)
 
-        // Function row.
         put(KeyEvent.KEYCODE_F1, 59); put(KeyEvent.KEYCODE_F2, 60); put(KeyEvent.KEYCODE_F3, 61)
         put(KeyEvent.KEYCODE_F4, 62); put(KeyEvent.KEYCODE_F5, 63); put(KeyEvent.KEYCODE_F6, 64)
         put(KeyEvent.KEYCODE_F7, 65); put(KeyEvent.KEYCODE_F8, 66); put(KeyEvent.KEYCODE_F9, 67)
         put(KeyEvent.KEYCODE_F10, 68); put(KeyEvent.KEYCODE_F11, 87); put(KeyEvent.KEYCODE_F12, 88)
 
-        // Punctuation (US layout reference — the PC's own layout applies on top).
         put(KeyEvent.KEYCODE_MINUS, 12); put(KeyEvent.KEYCODE_EQUALS, 13)
         put(KeyEvent.KEYCODE_LEFT_BRACKET, 26); put(KeyEvent.KEYCODE_RIGHT_BRACKET, 27)
         put(KeyEvent.KEYCODE_BACKSLASH, 43); put(KeyEvent.KEYCODE_SEMICOLON, 39)
@@ -68,6 +52,5 @@ object KeyMap {
         put(KeyEvent.KEYCODE_SLASH, 53)
     }
 
-    /** Linux evdev keycode for this Android keycode, or null if unmapped. */
     fun toLinux(androidKeyCode: Int): Int? = map[androidKeyCode]
 }

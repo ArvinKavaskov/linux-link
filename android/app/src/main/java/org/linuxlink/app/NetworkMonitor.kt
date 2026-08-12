@@ -11,28 +11,9 @@ import android.net.NetworkRequest
 import android.util.Log
 import kotlinx.coroutines.channels.Channel
 
-/**
- * Tells the connection loop the exact moment it is worth trying again.
- *
- * v2 just slept: `delay(2s × attempt)` up to thirty seconds. Walk from one
- * access point to another and you would stare at "PC unreachable" for half a
- * minute while the phone had perfectly good Wi-Fi the whole time. The fix is
- * not a shorter sleep — it is not sleeping at all, and instead waking up on
- * the events that actually change the answer:
- *
- *  * a network becomes available or validated (Wi-Fi came back, you roamed,
- *    you walked in the front door),
- *  * the screen comes on, which is both a good proxy for "the user is about
- *    to want this to work" and the moment Doze lets us talk again.
- *
- * The channel is CONFLATED: a burst of six callbacks during a Wi-Fi handover
- * results in exactly one reconnection attempt, not six.
- */
 class NetworkMonitor(private val context: Context) {
-
     private val cm = context.getSystemService(ConnectivityManager::class.java)
 
-    /** Receives a tick whenever it is worth retrying. */
     val wakeups = Channel<Unit>(Channel.CONFLATED)
 
     @Volatile
@@ -76,8 +57,6 @@ class NetworkMonitor(private val context: Context) {
             .build()
         runCatching { cm?.registerNetworkCallback(request, callback) }
             .onFailure { Log.w(TAG, "network callback: ${it.message}") }
-        // ACTION_SCREEN_ON is a protected system broadcast, but targetSdk 34+
-        // wants the export flag spelled out either way.
         runCatching {
             context.registerReceiver(
                 screenOn,
@@ -93,7 +72,6 @@ class NetworkMonitor(private val context: Context) {
         runCatching { context.unregisterReceiver(screenOn) }
     }
 
-    /** Wake the loop by hand (used right after the user taps "Connect"). */
     fun poke() {
         wakeups.trySend(Unit)
     }

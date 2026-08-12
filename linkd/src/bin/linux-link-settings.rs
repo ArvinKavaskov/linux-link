@@ -1,15 +1,3 @@
-//! The Linux Link settings window.
-//!
-//! Everything a user might want to change without opening a terminal: which
-//! phones are trusted, whether the PC locks when the phone walks away, whether
-//! the tray icon comes back at login, and the global keyboard shortcuts.
-//!
-//! This is a separate binary from the daemon, so it owns none of the daemon's
-//! state. It reads the same files the daemon writes and asks the daemon for
-//! anything that has to happen live, through the control socket. When the
-//! daemon is down the window still works — it edits the files directly — which
-//! matters because "the service will not start" is exactly when someone opens
-//! the settings.
 
 use eframe::egui::{self, Vec2};
 use serde::{Deserialize, Serialize};
@@ -22,11 +10,7 @@ use std::os::unix::net::UnixStream;
 use std::path::PathBuf;
 use std::time::{Duration, Instant};
 
-/// How often the window re-reads the world. Nothing here is expensive, but
-/// there is no reason to stat four files sixty times a second.
 const REFRESH: Duration = Duration::from_millis(1200);
-
-// ---------------------------------------------------------------- the files
 
 fn config_dir() -> PathBuf {
     dirs::config_dir().unwrap_or_else(std::env::temp_dir).join("linux-link")
@@ -46,7 +30,6 @@ fn autostart_file() -> PathBuf {
         .join("linux-link.desktop")
 }
 
-/// The daemon holds the control socket open for as long as it lives.
 fn daemon_running() -> bool {
     UnixStream::connect(socket_path()).is_ok()
 }
@@ -104,16 +87,12 @@ fn this_pc_name() -> String {
         .unwrap_or_else(|_| "this PC".to_string())
 }
 
-// -------------------------------------------------------------- the actions
-
-/// Fire-and-forget line on the control socket.
 fn tell_daemon(line: &str) -> std::io::Result<()> {
     let mut s = UnixStream::connect(socket_path())?;
     s.write_all(format!("{line}\n").as_bytes())?;
     s.flush()
 }
 
-/// A line on the control socket, with the daemon's answer.
 fn ask_daemon(line: &str) -> std::io::Result<String> {
     let stream = UnixStream::connect(socket_path())?;
     let mut wr = stream.try_clone()?;
@@ -125,8 +104,6 @@ fn ask_daemon(line: &str) -> std::io::Result<String> {
         .unwrap_or_else(|| Ok(String::new()))
 }
 
-/// Forgets a device through the daemon when it is up — it can then refuse the
-/// live connection straight away — and by editing `peers.json` when it is not.
 fn forget_device(fingerprint: &str) -> Result<String, String> {
     if let Ok(reply) = ask_daemon(&format!("FORGET {fingerprint}")) {
         return match reply.strip_prefix("OK ") {
@@ -144,9 +121,6 @@ fn forget_device(fingerprint: &str) -> Result<String, String> {
     Ok(removed.name)
 }
 
-
-/// Restarts the daemon for the user, so nobody has to know what systemd is.
-/// `systemctl --user` needs no privileges for a user unit.
 fn restart_service() -> Result<(), String> {
     let out = std::process::Command::new("systemctl")
         .args(["--user", "restart", "linkd"])
@@ -159,8 +133,6 @@ fn restart_service() -> Result<(), String> {
     }
 }
 
-/// The proximity lock lives in the daemon's memory as well as on disk, so it
-/// has to go through the socket to take effect without a restart.
 fn set_proximity(on: bool) -> Result<(), String> {
     tell_daemon(&format!("LOCKMODE {}", if on { "on" } else { "off" }))
         .map_err(|_| "the service is not running".to_string())
@@ -168,8 +140,6 @@ fn set_proximity(on: bool) -> Result<(), String> {
 
 fn autostart_enabled() -> bool {
     match std::fs::read_to_string(autostart_file()) {
-        // A desktop entry is disabled by `Hidden=true`, not by deleting it —
-        // that way we never lose the Exec line the installer wrote.
         Ok(text) => !text.lines().any(|l| l.trim().eq_ignore_ascii_case("hidden=true")),
         Err(_) => false,
     }
@@ -195,8 +165,6 @@ fn set_autostart(on: bool) -> Result<(), String> {
     std::fs::write(&path, format!("{}\n", kept.join("\n"))).map_err(|e| e.to_string())
 }
 
-/// The shortcuts belong to the daemon binary, which knows how to talk to each
-/// desktop. Shelling out to it keeps that knowledge in one place.
 fn linkd_bin() -> PathBuf {
     std::env::current_exe()
         .ok()
@@ -230,9 +198,6 @@ fn launch(bin: &str) {
     let _ = std::process::Command::new(path).spawn();
 }
 
-// ------------------------------------------------------------------ the app
-
-/// Everything the window shows, refreshed together on a timer.
 struct World {
     alive: bool,
     status: Status,
@@ -258,9 +223,7 @@ struct SettingsApp {
     last_read: Instant,
     logo: Option<egui::TextureHandle>,
     pc_name: String,
-    /// The last thing that happened, shown at the bottom.
     toast: Option<(String, bool)>,
-    /// Fingerprint awaiting confirmation before it is forgotten.
     confirm_forget: Option<String>,
 }
 
@@ -320,9 +283,6 @@ impl eframe::App for SettingsApp {
 }
 
 impl SettingsApp {
-    /// Identity on the left, one truthful status pill on the right. If the
-    /// service is down, the card below carries the fix as a button — nobody
-    /// should have to type a systemctl command to use their own settings.
     fn header(&mut self, ui: &mut egui::Ui, p: &Palette) {
         ui.horizontal(|ui| {
             if let Some(logo) = &self.logo {
@@ -386,8 +346,6 @@ impl SettingsApp {
     }
 
     fn devices_card(&mut self, ui: &mut egui::Ui, p: &Palette) {
-        // Collected before the closure so the borrow checker is happy about
-        // `self` being used inside it.
         let peers = self.world.peers.peers.clone();
         let connected: Vec<String> = self
             .world
@@ -417,8 +375,6 @@ impl SettingsApp {
             }
             for (i, peer) in peers.iter().enumerate() {
                 let short = &peer.fingerprint[..peer.fingerprint.len().min(16)];
-                // The status file carries fingerprints when it can and only
-                // names when it cannot; match on either.
                 let online = connected.iter().any(|f| f.starts_with(short))
                     || connected_names.iter().any(|n| n == &peer.name);
                 ui.horizontal(|ui| {
@@ -579,8 +535,6 @@ impl SettingsApp {
         }
     }
 
-    /// The toast fades in and out on egui's animation clock — visible long
-    /// enough to read, gone before it nags.
     fn footer(&mut self, ui: &mut egui::Ui, p: &Palette) {
         if let Some((msg, ok)) = self.toast.clone() {
             let colour = if ok { p.ok } else { p.warn };

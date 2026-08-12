@@ -1,17 +1,3 @@
-//! Turns a capture source into a stream of H.264 access units.
-//!
-//! We do not link against an encoder. GStreamer and FFmpeg are already on the
-//! machines we target (the webcam feature needs ffmpeg, PipeWire desktops ship
-//! the gst stack), and a subprocess writing Annex-B to its stdout is a process
-//! boundary we can kill cleanly — no half-initialised VA-API context to unwind
-//! when the tablet walks out of Wi-Fi range.
-//!
-//! The one real piece of work here is framing. The child gives us an Annex-B
-//! byte stream cut wherever the pipe felt like it; Android's MediaCodec wants
-//! whole access units. [`AnnexBSplitter`] finds NAL boundaries and
-//! [`AuAssembler`] groups NALs so that SPS/PPS travel glued to the IDR frame
-//! they describe — the first buffer the decoder sees is then always
-//! self-contained.
 
 use anyhow::{Context, Result};
 use std::process::Stdio;
@@ -21,21 +7,14 @@ use tokio::sync::mpsc;
 
 use super::has_cmd;
 
-/// What the backend managed to set up for us to point an encoder at.
 pub enum CaptureSource {
-    /// A PipeWire node (Mutter virtual monitor, or a portal stream on KDE).
-    /// `negotiate` asks pipewiresrc to drive the format to this size — that is
-    /// how Mutter decides how big the virtual monitor is.
     PipeWire { node: u32, negotiate: Option<(u32, u32)> },
-    /// A named wlroots output, captured with wf-recorder (Hyprland, Sway).
     WlrOutput { name: String },
-    /// A region of the X11 root window, captured with ffmpeg's x11grab.
     X11Region { x: u32, y: u32, width: u32, height: u32 },
 }
 
 pub struct Encoder {
     child: Child,
-    /// Assembled access units, ready to length-prefix onto the wire.
     pub units: mpsc::Receiver<Vec<u8>>,
 }
 
@@ -55,9 +34,6 @@ impl Encoder {
         let stdout = child.stdout.take().context("encoder stdout")?;
         let stderr = child.stderr.take().context("encoder stderr")?;
 
-        // The child's complaints are the only clue when a pipeline dies, and
-        // they die for local reasons (missing plugin, refused caps). Keep the
-        // last lines and log them when the stream ends.
         tokio::spawn(async move {
             let mut buf = Vec::new();
             let mut reader = tokio::io::BufReader::new(stderr);
@@ -70,10 +46,6 @@ impl Encoder {
             }
         });
 
-        // Small on purpose: the drop-on-full policy only engages when this
-        // channel is full, so its depth IS the worst-case queueing latency.
-        // Four units at 60 fps is 66 ms of ceiling; sixteen was a quarter
-        // second of invisible lag whenever Wi-Fi slowed down.
         let (tx, rx) = mpsc::channel::<Vec<u8>>(4);
         tokio::spawn(pump(stdout, tx));
 
@@ -90,14 +62,6 @@ async fn pump(mut stdout: tokio::process::ChildStdout, tx: mpsc::Sender<Vec<u8>>
     let mut assembler = AuAssembler::new();
     let mut buf = vec![0u8; 64 * 1024];
     loop {
-        // Both the splitter and the assembler close a unit only when the
-        // *next* one begins, which is fine for a constant-rate source and
-        // fatal for a damage-driven one: a Mutter screencast of a still
-        // desktop sends one frame and stops, and that frame would sit in the
-        // buffers forever while the tablet shows black. A short idle beat
-        // flushes whatever is complete. 10 ms: fast enough that the first
-        // frame after stillness never waits visibly, rare enough while
-        // streaming (frames arrive every ~16 ms) to cost nothing.
         let read = tokio::time::timeout(
             std::time::Duration::from_millis(10),
             stdout.read(&mut buf),
@@ -118,8 +82,6 @@ async fn pump(mut stdout: tokio::process::ChildStdout, tx: mpsc::Sender<Vec<u8>>
         };
         for nal in splitter.push(&buf[..n]) {
             if let Some(au) = assembler.push(nal) {
-                // If the consumer lags, dropping old frames is the right call
-                // for a live stream — never queue latency.
                 if tx.try_send(au).is_err() && tx.is_closed() {
                     return;
                 }
@@ -136,8 +98,6 @@ async fn pump(mut stdout: tokio::process::ChildStdout, tx: mpsc::Sender<Vec<u8>>
     }
 }
 
-/// Picks the encoder command for a capture source, preferring elements that
-/// actually exist on this machine.
 fn build_command(source: &CaptureSource, fps: u32, bitrate_kbps: u32) -> Result<(String, Vec<String>)> {
     let fps = fps.clamp(24, 60);
     match source {
@@ -193,7 +153,7 @@ fn build_command(source: &CaptureSource, fps: u32, bitrate_kbps: u32) -> Result<
                     "-c".into(),
                     "libx264".into(),
                     "-p".into(),
-                    "preset=ultrafast".into(),
+                    "preset=superfast".into(),
                     "-p".into(),
                     "tune=zerolatency".into(),
                     "-p".into(),
@@ -229,7 +189,7 @@ fn build_command(source: &CaptureSource, fps: u32, bitrate_kbps: u32) -> Result<
                     "-c:v".into(),
                     "libx264".into(),
                     "-preset".into(),
-                    "ultrafast".into(),
+                    "superfast".into(),
                     "-tune".into(),
                     "zerolatency".into(),
                     "-pix_fmt".into(),
@@ -251,27 +211,13 @@ vbv-maxrate={bitrate_kbps}:vbv-bufsize={}",
     }
 }
 
-/// The gst H.264 element chain, by decreasing preference. x264 in zerolatency
-/// mode is the boring, universally packaged choice; openh264 covers Fedora
-/// without RPM Fusion; vah264enc is the hardware path when present.
 fn gst_encoder(bitrate_kbps: u32, fps: u32) -> Result<Vec<String>> {
     if gst_has_element("x264enc") {
-        // The two settings that matter for glass-to-glass latency:
-        //
-        // * `intra-refresh` replaces the periodic IDR frame with a rolling
-        //   column of intra blocks. An IDR is 5-10× the size of a P-frame;
-        //   every two seconds it used to hit the wire as a burst the link had
-        //   to swallow and the decoder had to chew — a visible rhythm of
-        //   jank. With the refresh spread across the GOP, every frame is
-        //   roughly the same size.
-        // * `vbv-buf-capacity` of about two frame-times caps how large any
-        //   single frame may get, so the transmission time per frame is
-        //   constant instead of occasionally spiking.
         let vbv_ms = (2_000 / fps.max(1)).max(16);
         return Ok(vec![
             "x264enc".into(),
             "tune=zerolatency".into(),
-            "speed-preset=ultrafast".into(),
+            "speed-preset=superfast".into(),
             format!("bitrate={bitrate_kbps}"),
             "intra-refresh=true".into(),
             format!("key-int-max={fps}"),
@@ -308,9 +254,6 @@ fn gst_has_element(name: &str) -> bool {
         .unwrap_or(false)
 }
 
-/// Cuts an Annex-B byte stream into NAL units (start codes stripped of
-/// nothing — each returned unit *keeps* its start code, which is exactly what
-/// MediaCodec wants to see).
 pub struct AnnexBSplitter {
     buf: Vec<u8>,
 }
@@ -320,14 +263,10 @@ impl AnnexBSplitter {
         Self { buf: Vec::new() }
     }
 
-    /// Feeds bytes in, returns every complete NAL unit found so far.
     pub fn push(&mut self, data: &[u8]) -> Vec<Vec<u8>> {
         self.buf.extend_from_slice(data);
         let mut out = Vec::new();
-        // The first start code marks where our current NAL begins…
         while let Some(first) = find_start_code(&self.buf, 0) {
-            // …and the next one marks where it ends. Without it the NAL is
-            // still being received, so we stop and wait for more bytes.
             let Some(second) = find_start_code(&self.buf, first + 3) else { break };
             out.push(self.buf[first..second].to_vec());
             self.buf.drain(..second);
@@ -335,8 +274,6 @@ impl AnnexBSplitter {
         out
     }
 
-    /// The stream is over: whatever remains after the last start code is the
-    /// final NAL.
     pub fn finish(&mut self) -> Option<Vec<u8>> {
         let first = find_start_code(&self.buf, 0)?;
         if self.buf.len() > first + 4 {
@@ -349,13 +286,10 @@ impl AnnexBSplitter {
     }
 }
 
-/// Index of the next 3-byte start code (00 00 01), including the leading zero
-/// of a 4-byte one (00 00 00 01) so the code travels with its NAL.
 fn find_start_code(buf: &[u8], from: usize) -> Option<usize> {
     let mut i = from;
     while i + 3 <= buf.len() {
         if buf[i] == 0 && buf[i + 1] == 0 && buf[i + 2] == 1 {
-            // Prefer to include a fourth leading zero if there is one.
             return Some(if i > from && buf[i - 1] == 0 { i - 1 } else { i });
         }
         i += 1;
@@ -364,7 +298,6 @@ fn find_start_code(buf: &[u8], from: usize) -> Option<usize> {
 }
 
 fn nal_type(nal: &[u8]) -> u8 {
-    // Skip the 3- or 4-byte start code.
     let offset = if nal.len() > 3 && nal[2] == 1 { 3 } else { 4 };
     nal.get(offset).map(|b| b & 0x1F).unwrap_or(0)
 }
@@ -373,11 +306,6 @@ fn is_vcl(t: u8) -> bool {
     (1..=5).contains(&t)
 }
 
-/// Whether a VCL NAL is the *first* slice of its picture. Encoders in
-/// low-latency tunes split one frame into several slice NALs, and only the
-/// slice with `first_mb_in_slice == 0` starts a new picture. That field is
-/// the first Exp-Golomb value after the NAL header, and ue(v) encodes zero
-/// as a single 1 bit — so one bit test replaces a bitstream parser.
 fn starts_new_picture(nal: &[u8]) -> bool {
     let offset = if nal.len() > 3 && nal[2] == 1 { 3 } else { 4 };
     match nal.get(offset + 1) {
@@ -386,8 +314,6 @@ fn starts_new_picture(nal: &[u8]) -> bool {
     }
 }
 
-/// Groups NALs into access units: parameter sets and SEI attach to the frame
-/// that follows them, so every emitted unit decodes on its own terms.
 pub struct AuAssembler {
     pending: Vec<u8>,
     has_vcl: bool,
@@ -400,11 +326,6 @@ impl AuAssembler {
 
     pub fn push(&mut self, nal: Vec<u8>) -> Option<Vec<u8>> {
         let t = nal_type(&nal);
-        // A new picture, parameter set or AU delimiter after a frame closes
-        // the current access unit. 6..=9 is SEI, SPS, PPS, AU delimiter. A
-        // slice that *continues* the current picture closes nothing: sliced
-        // low-latency encoders send one frame as several NALs, and a decoder
-        // fed half a frame as if it were whole shows garbage or nothing.
         let flush = self.has_vcl
             && ((is_vcl(t) && starts_new_picture(&nal)) || matches!(t, 6..=9));
         let out = if flush {
@@ -449,7 +370,6 @@ mod tests {
             stream.extend_from_slice(n);
         }
 
-        // Feed in awkward 7-byte chunks, as the pipe might.
         let mut splitter = AnnexBSplitter::new();
         let mut nals = Vec::new();
         for chunk in stream.chunks(7) {
@@ -477,29 +397,24 @@ mod tests {
         if let Some(au) = asm.finish() {
             units.push(au);
         }
-        // SPS+PPS+IDR together, then each P frame on its own.
         assert_eq!(units.len(), 3);
         assert_eq!(nal_type(&units[0]), 7);
-        assert!(units[0].len() > 900 / 8); // contains the IDR too
+        assert!(units[0].len() > 900 / 8);
         assert_eq!(nal_type(&units[1]), 1);
         assert_eq!(nal_type(&units[2]), 1);
     }
 
     #[test]
     fn sliced_frames_stay_one_access_unit() {
-        // Low-latency encoders cut one picture into several slice NALs; only
-        // the slice with first_mb_in_slice == 0 (leading ue(v) bit set) opens
-        // a new picture, and the rest must stay in the same access unit — a
-        // decoder fed half a frame as if it were whole shows garbage.
         let mut asm = AuAssembler::new();
         let mut units = Vec::new();
         for n in [
             nal(0x67, 8),
             nal(0x68, 4),
-            vec![0, 0, 0, 1, 0x65, 0x88, 0xAA], // IDR, first slice
-            vec![0, 0, 0, 1, 0x65, 0x08, 0xAA], // IDR, continuation slice
-            vec![0, 0, 0, 1, 0x41, 0x9A, 0xAA], // next picture, first slice
-            vec![0, 0, 0, 1, 0x41, 0x1A, 0xAA], // its continuation
+            vec![0, 0, 0, 1, 0x65, 0x88, 0xAA],
+            vec![0, 0, 0, 1, 0x65, 0x08, 0xAA],
+            vec![0, 0, 0, 1, 0x41, 0x9A, 0xAA],
+            vec![0, 0, 0, 1, 0x41, 0x1A, 0xAA],
         ] {
             if let Some(au) = asm.push(n) {
                 units.push(au);
@@ -509,9 +424,7 @@ mod tests {
             units.push(au);
         }
         assert_eq!(units.len(), 2);
-        // Both IDR slices in the first unit…
         assert_eq!(units[0].windows(5).filter(|w| *w == [0, 0, 0, 1, 0x65]).count(), 2);
-        // …and both P slices in the second.
         assert_eq!(units[1].windows(5).filter(|w| *w == [0, 0, 0, 1, 0x41]).count(), 2);
     }
 

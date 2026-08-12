@@ -65,29 +65,20 @@ enum Command {
     },
     Media { action: String },
     SendFile {
-        /// Omit it and pass `--pick` to choose the file in a dialog instead.
         path: Option<String>,
         #[arg(long)]
         to: Option<String>,
-        /// Opens the desktop's file chooser. This is what the keyboard
-        /// shortcut uses: a shortcut cannot type a path.
         #[arg(long)]
         pick: bool,
     },
     PairLive,
-    /// Asks the tablet to become a second screen, without touching it.
     Screen {
-        /// Fingerprint of one device; omit it to offer the screen to every
-        /// connected device.
         #[arg(long)]
         to: Option<String>,
     },
     ProximityLock { state: String },
     Battery,
-    /// Removes a paired device (full fingerprint or the short form shown by
-    /// `linkd status`).
     Forget { fingerprint: String },
-    /// Global keyboard shortcuts: `install`, `remove` or `status`.
     Shortcuts { action: Option<String> },
 }
 
@@ -131,8 +122,6 @@ async fn main() -> Result<()> {
             Ok(())
         }
         Command::Forget { fingerprint } => {
-            // Through the daemon when it is up, so it can drop the live
-            // connection; straight to the file when it is not.
             match control::forget(&fingerprint).await {
                 Ok(name) => println!("Device forgotten: {name}"),
                 Err(_) => {
@@ -174,8 +163,6 @@ async fn main() -> Result<()> {
     }
 }
 
-/// Sends one or more files to the phone, either by path or through the
-/// desktop's file chooser.
 async fn send_file(path: Option<String>, to: Option<String>, pick: bool) -> Result<()> {
     let paths: Vec<String> = match (path, pick) {
         (Some(p), _) => vec![p],
@@ -183,7 +170,7 @@ async fn send_file(path: Option<String>, to: Option<String>, pick: bool) -> Resu
         (None, false) => anyhow::bail!("give a file path, or --pick to choose one"),
     };
     if paths.is_empty() {
-        return Ok(()); // The user cancelled the dialog — not an error.
+        return Ok(());
     }
     for p in paths {
         let abs = std::fs::canonicalize(&p).with_context(|| format!("file not found: {p}"))?;
@@ -193,8 +180,6 @@ async fn send_file(path: Option<String>, to: Option<String>, pick: bool) -> Resu
     Ok(())
 }
 
-/// Opens whatever file chooser the desktop provides. Returns an empty list when
-/// the user cancels, which every one of these signals with a non-zero exit.
 fn pick_files() -> Result<Vec<String>> {
     let candidates: [(&str, &[&str]); 3] = [
         ("zenity", &["--file-selection", "--multiple", "--separator=\n", "--title=Send to phone"]),
@@ -204,10 +189,10 @@ fn pick_files() -> Result<Vec<String>> {
     for (cmd, args) in candidates {
         let out = match std::process::Command::new(cmd).args(args).output() {
             Ok(o) => o,
-            Err(_) => continue, // Not installed; try the next one.
+            Err(_) => continue,
         };
         if !out.status.success() {
-            return Ok(Vec::new()); // Cancelled.
+            return Ok(Vec::new());
         }
         return Ok(String::from_utf8_lossy(&out.stdout)
             .lines()
@@ -262,13 +247,9 @@ async fn run(port: u16, no_ble: bool, pairing_mode: bool) -> Result<()> {
     };
     let pairing = pairing::Pairing::new(initial_token);
 
-    // mDNS + BLE, held so they can be republished after a suspend or an IP
-    // change — that used to be the number one cause of "I had to re-pair".
     let advertiser = netwatch::Advertiser::start(identity.clone(), port, !no_ble).await;
     netwatch::spawn(advertiser);
 
-    // Answers the phone's broadcast probe. This is what finds the PC again in
-    // milliseconds when the router hands out a new lease.
     discovery::spawn(identity.clone(), port);
 
     let clipboard = clipboard::ClipboardHub::new();

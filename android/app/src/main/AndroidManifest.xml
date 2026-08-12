@@ -2,13 +2,10 @@
 <manifest xmlns:android="http://schemas.android.com/apk/res/android"
     xmlns:tools="http://schemas.android.com/tools">
 
-    <!-- Réseau -->
     <uses-permission android:name="android.permission.INTERNET" />
     <uses-permission android:name="android.permission.ACCESS_NETWORK_STATE" />
     <uses-permission android:name="android.permission.ACCESS_WIFI_STATE" />
 
-    <!-- Bluetooth (découverte du PC via CDM ; pas besoin de localisation grâce au CDM) -->
-    <!-- Synchro Ne pas déranger (accès à la politique de notifications) -->
     <uses-permission android:name="android.permission.ACCESS_NOTIFICATION_POLICY" />
 
     <uses-permission android:name="android.permission.BLUETOOTH" android:maxSdkVersion="30" />
@@ -18,40 +15,26 @@
         android:usesPermissionFlags="neverForLocation"
         tools:targetApi="s" />
 
-    <!-- Privilèges companion : c'est le cœur du "tout automatique" -->
     <uses-permission android:name="android.permission.REQUEST_COMPANION_RUN_IN_BACKGROUND" />
     <uses-permission android:name="android.permission.REQUEST_COMPANION_USE_DATA_IN_BACKGROUND" />
     <uses-permission android:name="android.permission.REQUEST_COMPANION_START_FOREGROUND_SERVICES_FROM_BACKGROUND" />
     <uses-permission android:name="android.permission.REQUEST_OBSERVE_COMPANION_DEVICE_PRESENCE" />
 
-    <!-- Service de premier plan pendant la connexion au PC -->
     <uses-permission android:name="android.permission.FOREGROUND_SERVICE" />
     <uses-permission android:name="android.permission.FOREGROUND_SERVICE_CONNECTED_DEVICE" />
-    <!-- Téléphone-enceinte et téléphone-micro du PC, écran éteint -->
     <uses-permission android:name="android.permission.FOREGROUND_SERVICE_MEDIA_PLAYBACK" />
     <uses-permission android:name="android.permission.FOREGROUND_SERVICE_MICROPHONE" />
     <uses-permission android:name="android.permission.POST_NOTIFICATIONS" />
-    <!-- Second screen offered by the PC: opens the display straight away when
-         the tablet is locked, instead of waiting behind a notification -->
     <uses-permission android:name="android.permission.USE_FULL_SCREEN_INTENT" />
-    <!-- Reconnexion automatique après un redémarrage du téléphone -->
     <uses-permission android:name="android.permission.RECEIVE_BOOT_COMPLETED" />
 
-    <!-- Scan du QR code d'appairage + mode webcam -->
     <uses-permission android:name="android.permission.CAMERA" />
-    <!-- Mode micro : capture audio streamée au PC -->
     <uses-permission android:name="android.permission.RECORD_AUDIO" />
 
-    <!-- Synchro de dossier : accès au dossier /LinuxLink (tous les fichiers) -->
     <uses-permission android:name="android.permission.MANAGE_EXTERNAL_STORAGE"
         tools:ignore="ScopedStorage" />
 
-    <!-- Presse-papiers automatique : fenêtre overlay invisible qui rend l'app
-         "visible" pour Android, seule condition pour lire le presse-papiers
-         en arrière-plan depuis Android 10 -->
     <uses-permission android:name="android.permission.SYSTEM_ALERT_WINDOW" />
-    <!-- Plan B (accordé par câble USB si l'overlay ne suffit pas sur l'OEM) :
-         adb shell pm grant org.linuxlink.app android.permission.READ_LOGS -->
     <uses-permission android:name="android.permission.READ_LOGS"
         tools:ignore="ProtectedPermissions" />
 
@@ -75,8 +58,6 @@
             </intent-filter>
         </activity>
 
-        <!-- Réveillé PAR LE SYSTÈME quand le PC appairé apparaît à portée BLE.
-             C'est le mécanisme qui évite d'avoir à ouvrir l'app. -->
         <service
             android:name=".PcCompanionService"
             android:exported="true"
@@ -86,7 +67,6 @@
             </intent-filter>
         </service>
 
-        <!-- Mode webcam : capture caméra streamée au PC -->
         <activity
             android:name=".PairScanActivity"
             android:exported="false"
@@ -99,8 +79,6 @@
             android:screenOrientation="landscape"
             android:theme="@android:style/Theme.Material.Light.NoActionBar" />
 
-        <!-- La tablette comme second écran du PC : plein écran, paysage,
-             et on survit aux rotations sans recréer le décodeur -->
         <activity
             android:name=".SecondScreenActivity"
             android:exported="false"
@@ -108,22 +86,16 @@
             android:configChanges="orientation|screenSize|smallestScreenSize|screenLayout|keyboardHidden|keyboard|navigation"
             android:theme="@android:style/Theme.Material.NoActionBar.Fullscreen" />
 
-        <!-- Maintient la connexion QUIC tant que le PC est à portée -->
         <service
             android:name=".LinkForegroundService"
             android:exported="false"
             android:foregroundServiceType="connectedDevice" />
 
-        <!-- Le téléphone comme enceinte et/ou micro du PC (écran éteint) -->
         <service
             android:name=".PhoneAudioService"
             android:exported="false"
             android:foregroundServiceType="mediaPlayback|microphone" />
 
-        <!-- Redémarre la connexion toute seule après un reboot ou une mise à
-             jour de l'app : plus jamais besoin d'ouvrir Linux Link à la main -->
-        <!-- Pas de directBootAware : l'appairage est stocké dans le stockage
-             chiffré par identifiants, donc illisible avant le déverrouillage -->
         <receiver
             android:name=".BootReceiver"
             android:exported="true">
@@ -133,8 +105,6 @@
             </intent-filter>
         </receiver>
 
-        <!-- FileProvider : expose les images de presse-papiers reçues du PC
-             pour qu'elles soient collables dans les autres apps -->
         <provider
             android:name="androidx.core.content.FileProvider"
             android:authorities="${applicationId}.fileprovider"
@@ -145,7 +115,6 @@
                 android:resource="@xml/file_paths" />
         </provider>
 
-        <!-- Shizuku : fournisseur requis par l'API Shizuku -->
         <provider
             android:name="rikka.shizuku.ShizukuProvider"
             android:authorities="${applicationId}.shizuku"
@@ -154,8 +123,6 @@
             android:exported="true"
             android:permission="android.permission.INTERACT_ACROSS_USERS_FULL" />
 
-        <!-- Miroir de notifications : capte les notifications du téléphone
-             pour les relayer au PC (autorisation « Accès aux notifications ») -->
         <service
             android:name=".NotificationRelayService"
             android:exported="false"
@@ -165,8 +132,6 @@
             </intent-filter>
         </service>
 
-        <!-- Presse-papiers : activité transparente qui prend le focus pour
-             avoir le droit de lire (restriction Android 10+), envoie, disparaît -->
         <activity
             android:name=".SendClipboardActivity"
             android:exported="false"
@@ -174,7 +139,6 @@
             android:excludeFromRecents="true"
             android:noHistory="true" />
 
-        <!-- "Send the clipboard" Quick Settings tile -->
         <service
             android:name=".ClipboardTileService"
             android:exported="true"
@@ -186,7 +150,6 @@
             </intent-filter>
         </service>
 
-        <!-- "Second screen" Quick Settings tile -->
         <service
             android:name=".SecondScreenTileService"
             android:exported="true"
@@ -198,17 +161,12 @@
             </intent-filter>
         </service>
 
-        <!-- « Partager → Linux Link » : envoie un texte au presse-papiers du PC -->
         <activity
             android:name=".ShareReceiverActivity"
             android:exported="true"
             android:label="Linux Link (PC clipboard)"
             android:theme="@android:style/Theme.Translucent.NoTitleBar"
             android:excludeFromRecents="true">
-            <!-- Un seul filtre « tous types » : texte (→ clipboard/handoff) et
-                 fichiers de tout type (photos, PDF, etc. → transfert). Certains
-                 OEM (Honor/MagicOS) ignorent le 2e filtre quand on en met deux.
-                 SEND_MULTIPLE = plusieurs fichiers à la fois. -->
             <intent-filter>
                 <action android:name="android.intent.action.SEND" />
                 <action android:name="android.intent.action.SEND_MULTIPLE" />

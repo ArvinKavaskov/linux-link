@@ -1,13 +1,3 @@
-//! BLE presence beacon — the thing that lets Android wake our app.
-//!
-//! The advertisement carries exactly one fact: the Linux Link service UUID.
-//! That is all the CompanionDeviceManager filter on the phone matches on, and
-//! it is all that fits: a 128-bit UUID list is 18 bytes, the mandatory flags
-//! are 3 more, and a legacy BLE advertisement tops out at 31. Earlier versions
-//! also tried to pack the PC's IP and port into service data; that pushed the
-//! payload to 45 bytes, every controller rejected it, and nothing on the
-//! Android side ever read it — the phone finds our address over UDP/mDNS in
-//! milliseconds anyway.
 
 use anyhow::{Context, Result};
 use bluer::adv::Advertisement;

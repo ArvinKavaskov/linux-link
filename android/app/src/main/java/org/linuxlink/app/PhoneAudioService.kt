@@ -12,27 +12,13 @@ import android.media.AudioFormat
 import android.media.AudioTrack
 import android.os.IBinder
 
-/**
- * The phone as the PC's speaker and/or microphone, without the screen on.
- *
- * The webcam needs an Activity — a camera preview is a visual thing. Audio is
- * not: once the user flips the toggle, the phone should keep playing (or
- * capturing) with the screen off, in a pocket, across the room. That is a
- * foreground service by definition, so this is one, with the media-playback
- * and microphone types Android 14 requires us to declare.
- *
- * Speaker and mic are independent: either can run alone, or both together
- * (which turns the phone into a full headset for the PC).
- */
 class PhoneAudioService : Service() {
-
     companion object {
         const val ACTION_SPEAKER_START = "org.linuxlink.SPEAKER_START"
         const val ACTION_SPEAKER_STOP = "org.linuxlink.SPEAKER_STOP"
         const val ACTION_MIC_START = "org.linuxlink.MIC_START"
         const val ACTION_MIC_STOP = "org.linuxlink.MIC_STOP"
 
-        /** Read by MainActivity to draw the toggles in their current state. */
         @Volatile var speakerOn = false
             private set
         @Volatile var micOn = false
@@ -46,8 +32,6 @@ class PhoneAudioService : Service() {
     override fun onBind(intent: Intent?): IBinder? = null
 
     override fun onStartCommand(intent: Intent?, flags: Int, startId: Int): Int {
-        // startForeground must happen before any early exit: when we are
-        // launched with startForegroundService, not calling it is a crash.
         when (intent?.action) {
             ACTION_SPEAKER_START -> {
                 refreshForeground(wantSpeaker = true)
@@ -71,8 +55,6 @@ class PhoneAudioService : Service() {
         }
         return START_NOT_STICKY
     }
-
-    // ------------------------------------------------------------- speaker
 
     private fun startSpeaker() {
         if (speakerThread != null) return
@@ -101,8 +83,6 @@ class PhoneAudioService : Service() {
                             .setChannelMask(AudioFormat.CHANNEL_OUT_STEREO)
                             .build()
                     )
-                    // Twice the minimum: the network burps sometimes, and an
-                    // underrun clicks. A slightly deeper buffer is inaudible.
                     .setBufferSizeInBytes(maxOf(minBuf * 2, 16_384))
                     .setTransferMode(AudioTrack.MODE_STREAM)
                     .build()
@@ -120,7 +100,6 @@ class PhoneAudioService : Service() {
                     runCatching { input.close() }
                 }
             } catch (_: Exception) {
-                // Connection gone or stream refused — the toggle just resets.
             } finally {
                 speakerOn = false
                 speakerThread = null
@@ -133,14 +112,12 @@ class PhoneAudioService : Service() {
         speakerThread?.interrupt()
     }
 
-    // ----------------------------------------------------------------- mic
-
     private fun startMic() {
         if (micThread != null) return
         val client = LinkForegroundService.activeClient ?: return
         if (checkSelfPermission(android.Manifest.permission.RECORD_AUDIO) !=
             android.content.pm.PackageManager.PERMISSION_GRANTED
-        ) return // MainActivity asks before starting us; this is belt-and-braces.
+        ) return
 
         val rate = 48_000
         val minBuf = android.media.AudioRecord.getMinBufferSize(
@@ -197,8 +174,6 @@ class PhoneAudioService : Service() {
     private fun stopMic() {
         micThread?.interrupt()
     }
-
-    // ---------------------------------------------------------- foreground
 
     private fun stopIfIdle() {
         if (!speakerOn && !micOn) stopSelf()

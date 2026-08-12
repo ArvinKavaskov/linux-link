@@ -14,7 +14,6 @@ import android.view.WindowManager
 import org.json.JSONObject
 
 class ClipboardAutoSync(private val context: Context) {
-
     private val windowManager =
         context.getSystemService(Context.WINDOW_SERVICE) as WindowManager
     private val clipboard =

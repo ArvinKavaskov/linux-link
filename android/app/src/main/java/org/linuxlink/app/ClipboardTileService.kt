@@ -6,7 +6,6 @@ import android.os.Build
 import android.service.quicksettings.TileService
 
 class ClipboardTileService : TileService() {
-
     override fun onClick() {
         val intent = Intent(this, SendClipboardActivity::class.java)
             .addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)

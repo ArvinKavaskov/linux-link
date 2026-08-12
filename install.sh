@@ -1,21 +1,4 @@
 #!/usr/bin/env bash
-#
-# Linux Link — PC-side installation.
-#
-# Supports GNOME / KDE Plasma / Hyprland and apt / dnf / pacman based
-# distributions (Debian, Ubuntu, Zorin, Fedora, Arch, …).
-#
-# Installs the binaries (`linkd` daemon, `linux-link-gui` tray app,
-# `linux-link-pair` pairing window, `linux-link-settings` settings window),
-# the systemd user service, the app icon, the desktop entries, autostart,
-# the file-manager "Send to phone" actions (Nautilus, Nemo, Caja, Dolphin,
-# Thunar) and the global keyboard shortcuts.
-#
-# Usage:
-#   ./install.sh                 # build then install everything
-#   ./install.sh --no-build      # reuse the already compiled binaries
-#   ./install.sh --no-shortcuts  # do not touch the keyboard shortcuts
-#
 set -euo pipefail
 
 BIN_DIR="$HOME/.local/bin"
@@ -36,7 +19,6 @@ warn() { printf '\033[1;33m/!\\\033[0m %s\n' "$*"; }
 
 ROOT="$(cd "$(dirname "$0")" && pwd)"
 
-# ---------------------------------------------------------------- distro
 PKG=""
 if command -v apt-get >/dev/null 2>&1; then PKG="apt"
 elif command -v dnf   >/dev/null 2>&1; then PKG="dnf"
@@ -45,7 +27,6 @@ fi
 DISTRO="$(. /etc/os-release 2>/dev/null && echo "${PRETTY_NAME:-unknown}" || echo unknown)"
 say "Distribution: $DISTRO (package manager: ${PKG:-unknown})"
 
-# Runtime tools the daemon relies on -> package name per manager.
 missing=()
 need() { command -v "$1" >/dev/null 2>&1 || missing+=("$2"); }
 need playerctl playerctl
@@ -60,7 +41,6 @@ case "$PKG" in
     pacman) need pactl libpulse ;;
     *)      need pactl pulseaudio-utils ;;
 esac
-# Second screen: encoder tools, per session type and desktop.
 if [ -n "${WAYLAND_DISPLAY:-}" ]; then
     case "$PKG" in
         apt)    need gst-launch-1.0 gstreamer1.0-tools
@@ -73,7 +53,6 @@ if [ -n "${WAYLAND_DISPLAY:-}" ]; then
         *Hyprland*|*sway*|*Sway*) need wf-recorder wf-recorder ;;
         *KDE*) need krfb-virtualmonitor krfb ;;
     esac
-    # PipeWire element for gst (package names differ everywhere).
     if command -v gst-inspect-1.0 >/dev/null 2>&1 && ! gst-inspect-1.0 --exists pipewiresrc 2>/dev/null; then
         case "$PKG" in
             apt)    missing+=("gstreamer1.0-pipewire") ;;
@@ -101,7 +80,6 @@ if [ "${#missing[@]}" -gt 0 ]; then
     fi
 fi
 
-# ---------------------------------------------------------------- build
 cd "$ROOT/linkd"
 BUILD=1
 SHORTCUTS=1
@@ -147,8 +125,6 @@ say "systemd service — the daemon starts at every session login"
 mkdir -p "$SYSTEMD_DIR"
 install -m644 systemd/linkd.service "$SYSTEMD_DIR/linkd.service"
 systemctl --user daemon-reload
-# reenable, not enable: the unit's WantedBy changed in v4 (default.target →
-# graphical-session.target) and reenable is what drops the stale symlink.
 systemctl --user reenable linkd
 systemctl --user restart linkd
 
@@ -169,7 +145,6 @@ StartupNotify=false
 StartupWMClass=linux-link
 EOF
 install -m644 "$DESKTOP_TMP" "$APP_DIR/linux-link.desktop"
-# Autostart at session login (same entry + autostart activation).
 cp "$DESKTOP_TMP" "$AUTOSTART_DIR/linux-link.desktop"
 printf 'X-GNOME-Autostart-enabled=true\n' >> "$AUTOSTART_DIR/linux-link.desktop"
 rm -f "$DESKTOP_TMP"
@@ -193,7 +168,6 @@ chmod 644 "$APP_DIR/linux-link-settings.desktop"
 command -v update-desktop-database >/dev/null 2>&1 && \
     update-desktop-database "$APP_DIR" 2>/dev/null || true
 
-# ------------------------------------------------- file managers
 SENDER="$NAUTILUS_DIR/Send to phone"
 
 say "Right-click \"Send to phone\" — Nautilus (GNOME)"
@@ -203,9 +177,6 @@ if [ -f "desktop/Send to phone" ]; then
         warn "Nautilus script not installed (optional)"
 fi
 
-# The python extension puts the entry at the top level of the menu instead of
-# under "Scripts", and offers one line per phone when several are connected.
-# The script above stays installed as the fallback when python3-nautilus is not.
 if [ -f "desktop/send_to_phone.py" ]; then
     if python3 -c "import gi; gi.require_version('Nautilus', '4.0')" >/dev/null 2>&1 || \
        python3 -c "import gi; gi.require_version('Nautilus', '3.0')" >/dev/null 2>&1; then
@@ -241,8 +212,6 @@ fi
 if command -v thunar >/dev/null 2>&1; then
     say "Right-click \"Send to phone\" — Thunar (XFCE)"
     mkdir -p "$THUNAR_DIR"
-    # uca.xml is the user's own file and may already hold their custom actions,
-    # so we parse it, replace only our entry, and write it back.
     UCA="$THUNAR_DIR/uca.xml" SENDER="$SENDER" python3 - <<'PY' || warn "Thunar action not installed (optional)"
 import os
 import xml.etree.ElementTree as ET
@@ -255,7 +224,6 @@ if os.path.exists(path):
     try:
         root = ET.parse(path).getroot()
     except ET.ParseError:
-        # A malformed uca.xml is the user's problem, not ours to overwrite.
         raise SystemExit(1)
 else:
     root = ET.Element("actions")
@@ -277,8 +245,6 @@ for tag, text in [
     ("patterns", "*"),
 ]:
     ET.SubElement(action, tag).text = text
-# No <directories/>: the action only makes sense on files, and Thunar hides it
-# everywhere it is not listed.
 for kind in ("audio-files", "image-files", "other-files",
              "text-files", "video-files"):
     ET.SubElement(action, kind)
@@ -305,7 +271,6 @@ Exec=sh -c 'for f; do "$BIN_DIR/linkd" send-file "\$f"; done' _ %F
 EOF
 chmod 755 "$KDE_MENU_DIR/linux-link.desktop"
 
-# ------------------------------------------------------- Hyprland autostart
 HYPR_CONF="$HOME/.config/hypr/hyprland.conf"
 if [ -f "$HYPR_CONF" ]; then
     say "Hyprland detected — autostart via exec-once"
@@ -323,11 +288,6 @@ if [ -f "$HYPR_CONF" ]; then
     fi
 fi
 
-# ------------------------------------------------------------- firewall
-# Ubuntu and Zorin ship with no active firewall, but CachyOS enables ufw and
-# Fedora enables firewalld out of the box — and both silently drop the phone's
-# QUIC packets. "Pairing failed: PC unreachable" with the PC a metre away is
-# almost always this.
 open_firewall() {
     if command -v ufw >/dev/null 2>&1 && sudo ufw status 2>/dev/null | head -1 | grep -qi active; then
         say "Firewall: ufw is active — Linux Link needs UDP 47100 (QUIC) and 47101 (discovery)"
@@ -362,13 +322,7 @@ open_firewall() {
 }
 open_firewall
 
-# ------------------------------------------------------- second screen input
-# The tablet-as-second-screen feature injects mouse/keyboard through
-# /dev/uinput on every desktop except GNOME (which has a D-Bus API for it).
-# Stock permissions are root-only; this udev rule opens the node to the
-# locally logged-in user (uaccess), which is the modern, narrow way to do it.
 setup_uinput() {
-    # GNOME Wayland does not need it — skip the sudo prompt there.
     case "${XDG_CURRENT_DESKTOP:-}" in
         *GNOME*|*Zorin*) [ -z "${WAYLAND_DISPLAY:-}" ] || return 0 ;;
     esac
@@ -392,7 +346,6 @@ setup_uinput() {
 }
 setup_uinput
 
-# ---------------------------------------------------- keyboard shortcuts
 if [ "$SHORTCUTS" = 1 ]; then
     say "Global keyboard shortcuts"
     if "$BIN_DIR/linkd" shortcuts install 2>/dev/null; then
@@ -404,7 +357,6 @@ if [ "$SHORTCUTS" = 1 ]; then
     fi
 fi
 
-# Launch the icon immediately if we are in a graphical session.
 if [ -n "${DISPLAY:-}${WAYLAND_DISPLAY:-}" ]; then
     pkill -x linux-link-gui 2>/dev/null || true
     ( "$BIN_DIR/linux-link-gui" >/dev/null 2>&1 & ) || true

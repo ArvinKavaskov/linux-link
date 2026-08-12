@@ -1,22 +1,3 @@
-//! Creates the virtual monitor, one compositor at a time.
-//!
-//! There is no cross-desktop way to plug in a monitor that does not exist, so
-//! this module is a small collection of dialects:
-//!
-//! * **GNOME (Wayland)** — Mutter's private ScreenCast/RemoteDesktop D-Bus
-//!   API. `RecordVirtual` conjures a monitor whose size follows the video
-//!   format we negotiate, and the RemoteDesktop session injects input in
-//!   stream coordinates. The whole thing needs zero special permissions —
-//!   it is the same door gnome-remote-desktop walks through.
-//! * **Hyprland / Sway** — a headless output (`hyprctl output create` /
-//!   `swaymsg create_output`), captured by wf-recorder.
-//! * **KDE Plasma (Wayland)** — `krfb-virtualmonitor` makes the output exist
-//!   (its VNC side is left unused, bound with a throwaway password), and the
-//!   xdg-desktop-portal screencast — with a persisted restore token, so the
-//!   picker dialog appears exactly once — provides the frames.
-//! * **X11 (any desktop)** — the framebuffer is enlarged and a fake RandR
-//!   monitor is declared over the new region; ffmpeg's x11grab reads it back.
-//!   Ancient magic, works everywhere.
 
 use anyhow::{Context, Result};
 use serde_json::Value;
@@ -54,7 +35,6 @@ pub fn detect() -> Result<Compositor> {
         return Ok(Compositor::KdeWayland);
     }
     if session != "wayland" && std::env::var_os("DISPLAY").is_some() {
-        // No session type exported but X is reachable — good enough.
         return Ok(Compositor::X11);
     }
     anyhow::bail!(
@@ -63,12 +43,8 @@ pub fn detect() -> Result<Compositor> {
     )
 }
 
-/// Everything a backend hands back: where to point the encoder, how input
-/// gets in, and what must be undone at the end.
 pub struct PreparedDisplay {
     pub source: CaptureSource,
-    /// The tablet monitor's rectangle and the whole desktop's bounding box —
-    /// only for uinput backends. Mutter does its own coordinate math.
     pub geometry: Option<(Rect, Rect)>,
     pub mutter: Option<MutterSession>,
     pub guards: Guards,
@@ -76,14 +52,10 @@ pub struct PreparedDisplay {
     pub height: u32,
 }
 
-/// Teardown collected as data: child processes to kill and commands to run,
-/// executed in `Drop` so a panic or a dropped QUIC stream still cleans up.
 #[derive(Default)]
 pub struct Guards {
     pub children: Vec<std::process::Child>,
     pub commands: Vec<Vec<String>>,
-    /// Anything that must simply stay alive as long as the session does —
-    /// e.g. the D-Bus connection owning a portal screencast session.
     pub keepalive: Vec<Box<dyn std::any::Any + Send>>,
 }
 
@@ -111,14 +83,9 @@ pub async fn prepare(comp: Compositor, width: u32, height: u32, fps: u32) -> Res
     }
 }
 
-// ---------------------------------------------------------------- GNOME ----
-
-/// A live Mutter remote-desktop + screencast session pair. Kept for the whole
-/// display session: it is both the source of frames and the input channel.
 pub struct MutterSession {
     rd_session: zbus::Proxy<'static>,
     stream_path: String,
-    /// Size we negotiated — Notify* input calls use these stream coordinates.
     pub width: f64,
     pub height: f64,
 }
@@ -222,14 +189,14 @@ impl MutterSession {
             }
             I::Button { b, d } => {
                 let code: i32 = match b {
-                    0 => 0x110, // BTN_LEFT
-                    1 => 0x111, // BTN_RIGHT
-                    _ => 0x112, // BTN_MIDDLE
+                    0 => 0x110,
+                    1 => 0x111,
+                    _ => 0x112,
                 };
                 s.call::<_, _, ()>("NotifyPointerButton", &(code, d)).await?;
             }
             I::Scroll { dx, dy, end } => {
-                let flags: u32 = u32::from(end); // 1 = FINISH
+                let flags: u32 = u32::from(end);
                 s.call::<_, _, ()>("NotifyPointerAxis", &(dx, dy, flags)).await?;
             }
             I::Key { c, d } => {
@@ -255,8 +222,6 @@ impl MutterSession {
                 }
             },
             I::Pen { x, y, d, prox, .. } if prox => {
-                // Mutter's remote API has no tablet-tool path; a pen is a very
-                // precise finger of a mouse.
                 s.call::<_, _, ()>(
                     "NotifyPointerMotionAbsolute",
                     &(self.stream_path.as_str(), x * self.width, y * self.height),
@@ -264,20 +229,16 @@ impl MutterSession {
                 .await?;
                 s.call::<_, _, ()>("NotifyPointerButton", &(0x110i32, d)).await?;
             }
-            // Pen out of range: nothing to do, the cursor simply stays put.
             I::Pen { .. } => {}
         }
         Ok(())
     }
 }
 
-// ------------------------------------------------------- Hyprland / Sway ----
-
 const HYPR_NAME: &str = "linuxlink";
 
 async fn prepare_hyprland(width: u32, height: u32, fps: u32) -> Result<PreparedDisplay> {
     run(&["hyprctl", "output", "create", "headless", HYPR_NAME]).await?;
-    // Give it the tablet's mode; "auto" places it to the right of everything.
     run(&[
         "hyprctl",
         "keyword",
@@ -351,8 +312,6 @@ async fn sway_output_names() -> Result<Vec<String>> {
         .unwrap_or_default())
 }
 
-// ------------------------------------------------------------------ KDE ----
-
 async fn prepare_kde(width: u32, height: u32) -> Result<PreparedDisplay> {
     if !has_cmd("krfb-virtualmonitor") {
         anyhow::bail!(
@@ -363,9 +322,6 @@ async fn prepare_kde(width: u32, height: u32) -> Result<PreparedDisplay> {
     }
     let before = kscreen_outputs().await.unwrap_or_default();
 
-    // The VNC side of krfb-virtualmonitor is a passenger we never talk to:
-    // random password, and the firewall guidance in the README already keeps
-    // the port closed to the outside.
     let password = crate::pairing::new_token();
     let port = 51000 + (std::process::id() % 8000) as u16;
     let child = std::process::Command::new("krfb-virtualmonitor")
@@ -386,7 +342,6 @@ async fn prepare_kde(width: u32, height: u32) -> Result<PreparedDisplay> {
     let mut guards = Guards::default();
     guards.children.push(child);
 
-    // Wait for the new output to land in kscreen.
     let mut geometry = None;
     for _ in 0..25 {
         tokio::time::sleep(std::time::Duration::from_millis(200)).await;
@@ -403,8 +358,6 @@ async fn prepare_kde(width: u32, height: u32) -> Result<PreparedDisplay> {
         .map(|outs| union_rects(outs.iter().map(|(_, r)| *r)))
         .unwrap_or(monitor);
 
-    // Frames come from the portal; the restore token makes the picker a
-    // one-time event per PC.
     let (node, token, bus) = super::portal::open_screencast(load_restore_token()).await?;
     if let Some(t) = token {
         save_restore_token(&t);
@@ -440,7 +393,6 @@ async fn kscreen_outputs() -> Result<Vec<(String, Rect)>> {
     Ok(outs)
 }
 
-/// kscreen reports the mode size; the logical size divides by the scale.
 fn kscreen_size(o: &Value) -> (f64, f64) {
     let scale = o.get("scale").and_then(Value::as_f64).unwrap_or(1.0).max(0.25);
     let w = o
@@ -475,18 +427,9 @@ fn save_restore_token(token: &str) {
     let _ = std::fs::write(p, token);
 }
 
-// ------------------------------------------------------------------ X11 ----
-
 const X11_NAME: &str = "LinuxLink";
 
 async fn prepare_x11(width: u32, height: u32) -> Result<PreparedDisplay> {
-    // GNOME is a lost cause on X11, verified on real hardware: Mutter undoes
-    // an enlarged framebuffer within a second, and it ignores an output it
-    // believes disconnected even with a mode forced onto it — the region
-    // exists, the capture works, and nothing is ever drawn there, so the
-    // tablet shows black while the attempt visibly disturbs the desktop.
-    // Refusing up front turns that mess into one clear sentence on the
-    // tablet, pointing at the session where this actually works.
     let desktop = std::env::var("XDG_CURRENT_DESKTOP").unwrap_or_default().to_lowercase();
     if desktop.contains("gnome") || desktop.contains("zorin") {
         anyhow::bail!(
@@ -499,10 +442,6 @@ async fn prepare_x11(width: u32, height: u32) -> Result<PreparedDisplay> {
     let query = run_sync(&["xrandr", "--query"])?;
     let (cur_w, cur_h) = parse_x11_screen_size(&query).context("parsing xrandr output")?;
 
-    // A dead connector first. A mode forced onto a real output gets a real
-    // CRTC, and desktop environments treat that as a monitor to arrange, not
-    // an anomaly to repair. The enlarged-framebuffer trick below is the one
-    // GNOME's window manager reverts within a second of us setting it up.
     for out in parse_x11_disconnected(&query) {
         match try_x11_forced_output(&out, width, height, cur_w, cur_h).await {
             Ok(p) => {
@@ -515,9 +454,6 @@ async fn prepare_x11(width: u32, height: u32) -> Result<PreparedDisplay> {
     try_x11_big_framebuffer(width, height, cur_w, cur_h).await
 }
 
-/// Forces a mode onto a disconnected output. The driver scans out to nobody,
-/// but the region is real: it has a CRTC, the desktop lists it as a monitor,
-/// and x11grab can read it. This is the sturdy path on X11.
 async fn try_x11_forced_output(
     out: &str,
     width: u32,
@@ -534,13 +470,9 @@ async fn try_x11_forced_output(
     );
     newmode.push("+hsync".into());
     newmode.push("-vsync".into());
-    // A leftover mode from a crashed session is fine to reuse, so a failure
-    // here is ignored; any real problem resurfaces at --addmode.
     let _ = run_sync_owned(&newmode);
     run_sync(&["xrandr", "--addmode", out, &mode])?;
 
-    // Guards go in *before* the mode is switched on: whatever happens next,
-    // the session's end puts the outputs back the way they were.
     let mut guards = Guards::default();
     guards.commands.push(vec!["xrandr".into(), "--output".into(), out.into(), "--off".into()]);
     guards.commands.push(vec!["xrandr".into(), "--delmode".into(), out.into(), mode.clone()]);
@@ -549,9 +481,6 @@ async fn try_x11_forced_output(
 
     run_sync(&["xrandr", "--output", out, "--mode", &mode, "--pos", &format!("{cur_w}x0")])?;
 
-    // The desktop gets a moment to notice the new monitor and arrange it —
-    // it may well move it — and then the capture targets wherever the
-    // monitor actually ended up, not where we asked for it to be.
     tokio::time::sleep(std::time::Duration::from_millis(800)).await;
     let query = run_sync(&["xrandr", "--query"])?;
     let (x, y) = parse_x11_output_pos(&query, out, width, height)
@@ -573,11 +502,6 @@ async fn try_x11_forced_output(
     })
 }
 
-/// The fallback when no output can host a mode: enlarge the framebuffer and
-/// declare a fake RandR monitor over the new region. Plain window managers
-/// leave it alone; full desktops rarely do, which is why the result is
-/// verified instead of assumed — streaming a region the desktop has already
-/// taken back just shows the tablet an error from ffmpeg.
 async fn try_x11_big_framebuffer(
     width: u32,
     height: u32,
@@ -588,7 +512,7 @@ async fn try_x11_big_framebuffer(
     let new_h = cur_h.max(height);
     let x_off = cur_w;
 
-    let mm_w = width * 254 / 960; // assume 96 dpi
+    let mm_w = width * 254 / 960;
     let mm_h = height * 254 / 960;
 
     run_sync(&["xrandr", "--fb", &format!("{new_w}x{new_h}")])?;
@@ -639,12 +563,8 @@ struct Modeline {
     vtotal: u32,
 }
 
-/// CVT 1.1 reduced-blanking timings, the same maths as `cvt -r`. Computed
-/// here rather than shelling out because `cvt` ships in a different package
-/// on every distro, and a virtual output only needs the numbers to look
-/// plausible to the driver anyway.
 fn cvt_rb_modeline(width: u32, height: u32) -> Modeline {
-    const RB_H_BLANK: u32 = 160; // fp 48 + sync 32 + bp 80
+    const RB_H_BLANK: u32 = 160;
     const RB_MIN_VBLANK_US: f64 = 460.0;
     const V_FP: u32 = 3;
     const V_MIN_BP: u32 = 6;
@@ -658,12 +578,9 @@ fn cvt_rb_modeline(width: u32, height: u32) -> Modeline {
     };
 
     let htotal = width + RB_H_BLANK;
-    // Estimate the line period from the frame time minus the fixed vertical
-    // blank, then find how many blank lines fit in that minimum blank time.
     let h_period_us = (1_000_000.0 / 60.0 - RB_MIN_VBLANK_US) / f64::from(height);
     let vbi = ((RB_MIN_VBLANK_US / h_period_us).floor() as u32 + 1).max(V_FP + vsync + V_MIN_BP);
     let vtotal = height + vbi;
-    // Pixel clock, rounded down to the 0.25 MHz granularity of the spec.
     let clock_mhz = (60.0 * f64::from(htotal) * f64::from(vtotal) / 250_000.0).floor() * 0.25;
 
     Modeline {
@@ -679,9 +596,6 @@ fn cvt_rb_modeline(width: u32, height: u32) -> Modeline {
     }
 }
 
-/// Output names that are disconnected *and* idle — a forced mode from a
-/// previous session leaves the output "disconnected" but with a geometry,
-/// and that one is in use, not free.
 fn parse_x11_disconnected(query: &str) -> Vec<String> {
     query
         .lines()
@@ -699,8 +613,6 @@ fn parse_x11_disconnected(query: &str) -> Vec<String> {
         .collect()
 }
 
-/// Where an output actually is: the `WxH+X+Y` token on its xrandr line,
-/// accepted only if the size is the one we asked for.
 fn parse_x11_output_pos(query: &str, out: &str, width: u32, height: u32) -> Option<(u32, u32)> {
     let line = query.lines().find(|l| l.starts_with(&format!("{out} ")))?;
     let geom = line.split_whitespace().find(|t| t.starts_with(&format!("{width}x{height}+")))?;
@@ -710,7 +622,6 @@ fn parse_x11_output_pos(query: &str, out: &str, width: u32, height: u32) -> Opti
     Some((x, y))
 }
 
-/// "Screen 0: minimum 320 x 200, current 1920 x 1080, maximum 16384 x 16384"
 fn parse_x11_screen_size(query: &str) -> Option<(u32, u32)> {
     let line = query.lines().find(|l| l.starts_with("Screen "))?;
     let cur = line.split("current ").nth(1)?;
@@ -723,8 +634,6 @@ fn parse_x11_screen_size(query: &str) -> Option<(u32, u32)> {
     let h: u32 = parts.next()?.parse().ok()?;
     Some((w, h))
 }
-
-// -------------------------------------------------------------- helpers ----
 
 async fn run(cmd: &[&str]) -> Result<String> {
     let out = tokio::process::Command::new(cmd[0])
@@ -754,8 +663,6 @@ fn run_sync(cmd: &[&str]) -> Result<String> {
     Ok(String::from_utf8_lossy(&out.stdout).to_string())
 }
 
-/// Finds `name` in a hyprctl-style JSON monitor array and returns its rect
-/// plus the union of all rects.
 fn wlr_geometry(json: &str, name: &str, kx: &str, ky: &str, kw: &str, kh: &str) -> Option<(Rect, Rect)> {
     let v: Value = serde_json::from_str(json).ok()?;
     let arr = v.as_array()?;
@@ -775,7 +682,6 @@ fn wlr_geometry(json: &str, name: &str, kx: &str, ky: &str, kw: &str, kh: &str) 
     Some((monitor, desktop))
 }
 
-/// Sway nests geometry under "rect".
 fn sway_geometry(json: &str, name: &str) -> Option<(Rect, Rect)> {
     let v: Value = serde_json::from_str(json).ok()?;
     let arr = v.as_array()?;
@@ -821,15 +727,11 @@ mod tests {
 
     #[test]
     fn reduced_blanking_matches_the_cvt_tool() {
-        // `cvt -r 1920 1080 60`:
-        // Modeline "1920x1080R" 138.50 1920 1968 2000 2080 1080 1083 1088 1111
         let m = cvt_rb_modeline(1920, 1080);
         assert_eq!(
             (m.clock_mhz, m.hss, m.hse, m.htotal, m.vss, m.vse, m.vtotal),
             (138.50, 1968, 2000, 2080, 1083, 1088, 1111)
         );
-        // `cvt -r 2560 1440 60`:
-        // Modeline "2560x1440R" 241.50 2560 2608 2640 2720 1440 1443 1448 1481
         let m = cvt_rb_modeline(2560, 1440);
         assert_eq!(
             (m.clock_mhz, m.hss, m.hse, m.htotal, m.vss, m.vse, m.vtotal),
@@ -845,7 +747,6 @@ eDP-1 connected (normal left inverted right x axis y axis)
 HDMI-1 disconnected (normal left inverted right x axis y axis)
 HDMI-1-0 connected primary 1920x1080+0+0 (normal left inverted right) 598mm x 336mm
 DP-2 disconnected 1696x1200+1920+0 (normal left inverted right) 0mm x 0mm";
-        // HDMI-1 is free; DP-2 is disconnected but carries a forced mode.
         assert_eq!(parse_x11_disconnected(q), vec!["HDMI-1".to_string()]);
     }
 
@@ -856,7 +757,6 @@ HDMI-1-0 connected primary 1920x1080+0+0 (normal left inverted right) 598mm x 33
 HDMI-1 disconnected 1696x1200+1920+0 (normal left inverted right) 0mm x 0mm";
         assert_eq!(parse_x11_output_pos(q, "HDMI-1", 1696, 1200), Some((1920, 0)));
         assert_eq!(parse_x11_output_pos(q, "HDMI-1-0", 1920, 1080), Some((0, 0)));
-        // The size must be the one we asked for, or the position is useless.
         assert_eq!(parse_x11_output_pos(q, "HDMI-1", 1600, 1200), None);
     }
 

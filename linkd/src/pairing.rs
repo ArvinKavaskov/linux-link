@@ -57,16 +57,7 @@ pub fn print_qr(identity: &Identity, port: u16, token: &str) -> Result<()> {
     Ok(())
 }
 
-/// Every address this PC can plausibly be reached on, best guess first.
-///
-/// We used to hand the phone a single IPv4. On a machine with both Ethernet
-/// and Wi-Fi up — or on a laptop that gets a new lease five minutes later —
-/// that one address is a coin flip. Giving the phone the whole list costs a
-/// few bytes in the QR code and saves a re-pairing.
 fn local_addresses() -> Vec<String> {
-    // Real, phone-reachable interfaces only. A Docker bridge or a VPN tunnel
-    // has an address too, and with the hard cap below it would evict the LAN
-    // address from the QR — pairing then fails with the PC one metre away.
     let mut reachable: Vec<String> = Vec::new();
     if let Ok(list) = local_ip_address::list_afinet_netifas() {
         for (name, ip) in list {
@@ -80,10 +71,6 @@ fn local_addresses() -> Vec<String> {
         }
     }
 
-    // local_ip() follows the default route, so when it points at one of our
-    // reachable interfaces it is the best first guess. When it does not (VPN
-    // holding the default route), it would send the phone into a tunnel it
-    // cannot enter — ignore it and trust the interface list.
     if let Ok(primary) = local_ip_address::local_ip() {
         let p = primary.to_string();
         if let Some(pos) = reachable.iter().position(|a| a == &p) {
@@ -91,16 +78,10 @@ fn local_addresses() -> Vec<String> {
         }
     }
 
-    // Hard cap: every extra address grows the QR payload, and past ~230 bytes
-    // the code jumps a version, the modules shrink and phones stop scanning it.
-    // Two is plenty — the UDP beacon handles the rest.
     reachable.truncate(2);
     reachable
 }
 
-/// Interfaces a phone on the same Wi-Fi can never reach: container bridges,
-/// VM networks, VPN tunnels. Matching by name prefix is what everyone does,
-/// because that is all the information there is.
 fn is_virtual_interface(name: &str) -> bool {
     const PREFIXES: &[&str] = &[
         "docker", "br-", "veth", "virbr", "vnet", "tun", "tap", "wg",
@@ -142,7 +123,6 @@ impl Pairing {
 
     pub fn notify_paired(&self, name: &str) {
         let _ = self.events.send(name.to_string());
-        // A new device in the trusted list changes the status file.
         crate::events::poke();
     }
 }

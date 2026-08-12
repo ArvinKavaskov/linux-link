@@ -1,18 +1,3 @@
-//! Keeps the PC findable, whatever the machine or the network does.
-//!
-//! Two things used to break the link permanently:
-//!
-//!   * **Suspend.** BlueZ drops advertisements across a sleep cycle and the
-//!     mDNS daemon's socket comes back on a different interface state, so after
-//!     a lid-close the PC was still listening but had stopped saying so.
-//!   * **A new IP.** The BLE service data and the mDNS record both embed the
-//!     address; a DHCP lease change made both of them lie.
-//!
-//! So we hold the two advertisement guards here and re-publish them whenever
-//! logind tells us we just woke up, or whenever the primary IPv4 changes.
-//!
-//! Cost when idle: one D-Bus signal subscription (zero wakeups) plus a
-//! `getifaddrs` call every 15 s, which is a few microseconds of user time.
 
 use crate::identity::Identity;
 use futures_util::StreamExt;
@@ -28,8 +13,6 @@ pub struct Advertiser {
     use_ble: bool,
     mdns: Mutex<Option<crate::mdns::MdnsGuard>>,
     ble: Mutex<Option<crate::ble::AdvertisingGuard>>,
-    /// Bumped by every republish. A pending BLE retry loop quits the moment it
-    /// no longer matches, so at most one retry loop is ever doing anything.
     generation: AtomicU64,
 }
 
@@ -47,30 +30,23 @@ impl Advertiser {
         me
     }
 
-    /// Drops the current advertisements and publishes fresh ones.
     pub async fn republish(self: &Arc<Self>, why: &str) {
         let generation = self.generation.fetch_add(1, Ordering::SeqCst) + 1;
         {
             let mut slot = self.mdns.lock().await;
-            *slot = None; // Drop unregisters the old record first.
+            *slot = None;
             match crate::mdns::advertise(&self.identity, self.port) {
                 Ok(g) => *slot = Some(g),
                 Err(e) => tracing::warn!("mDNS unavailable: {e:#}"),
             }
         }
         if self.use_ble && !self.try_ble().await {
-            // The classic failure is a race at login: linkd is up before
-            // bluetoothd has finished bringing the controller up, the
-            // RegisterAdvertisement call fails, and without a retry BLE would
-            // stay dead until the next suspend or IP change. So keep knocking.
             tracing::warn!("BLE advertisement failed — will keep retrying; mDNS/UDP still work");
             self.spawn_ble_retry(generation);
         }
         tracing::info!("Advertisements published ({why})");
     }
 
-    /// One BLE registration attempt. Holds the slot lock so an attempt and a
-    /// concurrent republish can never interleave their guard swaps.
     async fn try_ble(&self) -> bool {
         let mut slot = self.ble.lock().await;
         *slot = None;
@@ -86,10 +62,6 @@ impl Advertiser {
         }
     }
 
-    /// Retries the BLE advertisement with a growing delay (2 s → 60 s), for as
-    /// long as this republish generation is the current one. Costs one D-Bus
-    /// call per attempt; a Bluetooth adapter that shows up an hour later still
-    /// gets picked up.
     fn spawn_ble_retry(self: &Arc<Self>, generation: u64) {
         let me = self.clone();
         tokio::spawn(async move {
@@ -97,7 +69,7 @@ impl Advertiser {
             loop {
                 tokio::time::sleep(Duration::from_secs(wait)).await;
                 if me.generation.load(Ordering::SeqCst) != generation {
-                    return; // A newer republish owns the slot now.
+                    return;
                 }
                 if me.try_ble().await {
                     tracing::info!("BLE advertisement up after retry");
@@ -109,7 +81,6 @@ impl Advertiser {
     }
 }
 
-/// Re-advertise on resume from suspend and whenever our IPv4 changes.
 pub fn spawn(adv: Arc<Advertiser>) {
     let a = adv.clone();
     tokio::spawn(async move { watch_sleep(a).await });
@@ -152,7 +123,6 @@ async fn watch_sleep(adv: Arc<Advertiser>) {
             tracing::info!("💤 Suspending — advertisements will be republished on resume");
             continue;
         }
-        // Give the network stack a moment to bring interfaces back up.
         tokio::time::sleep(Duration::from_millis(1500)).await;
         adv.republish("resume from suspend").await;
     }

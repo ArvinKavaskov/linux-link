@@ -13,7 +13,6 @@ import org.json.JSONObject
 import java.util.concurrent.ConcurrentHashMap
 
 class NotificationRelayService : NotificationListenerService() {
-
     override fun onListenerConnected() {
         instance = this
     }

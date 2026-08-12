@@ -1,18 +1,3 @@
-//! The Linux Link design system for the desktop windows.
-//!
-//! One file, shared by every egui binary through `#[path]`, so the pairing
-//! window and the settings window can never drift apart. The rules:
-//!
-//! * **One accent, and it is not a colour.** Near-black on light, soft
-//!   white on dark — the interface is monochrome by intent, and colour is
-//!   reserved for *meaning*: the green of a live link, the red of a
-//!   destructive act. The logo keeps its violet; the chrome stays quiet.
-//! * **Light and dark**, following the system. Nothing is hard-coded to a
-//!   mode; every color goes through [`Palette`].
-//! * **A spacing scale** (4 / 8 / 12 / 16 / 20 / 24) and two radii: 16 for
-//!   cards, 12 for controls. Pills and switches are fully round.
-//! * **Motion is state change only** — the switch knob slides, the toast
-//!   fades. Nothing moves for decoration.
 
 use eframe::egui::{self, Color32, Response, Rounding as Radius, Sense, Stroke, Ui, Vec2};
 
@@ -20,7 +5,6 @@ use eframe::egui::{self, Color32, Response, Rounding as Radius, Sense, Stroke, U
 pub struct Palette {
     pub bg: Color32,
     pub card: Color32,
-    /// A surface one step above a card: field wells, the QR frame.
     pub raised: Color32,
     pub text: Color32,
     pub dim: Color32,
@@ -61,9 +45,6 @@ pub fn palette(dark: bool) -> Palette {
     }
 }
 
-/// Reads the resolved system theme and returns the matching palette, after
-/// applying the shared style (spacing scale, control shapes, focus color) to
-/// the context. Call it once at the top of every frame.
 pub fn frame_palette(ctx: &egui::Context) -> Palette {
     let dark = ctx.theme() == egui::Theme::Dark;
     let p = palette(dark);
@@ -84,8 +65,6 @@ fn apply(ctx: &egui::Context, p: &Palette) {
     v.selection.bg_fill = p.accent.gamma_multiply(0.35);
     v.selection.stroke = Stroke::new(1.0, p.accent);
 
-    // Quiet controls: filled a step above the card, no border noise, and the
-    // accent only appears on focus rings and primary actions.
     let radius = Radius::same(12.0);
     for w in [
         &mut v.widgets.inactive,
@@ -114,9 +93,6 @@ fn lighten(c: Color32, by: i16) -> Color32 {
     Color32::from_rgb(f(c.r()), f(c.g()), f(c.b()))
 }
 
-// ------------------------------------------------------------- components
-
-/// A content card: radius 16, hairline outline, 16 px padding, full width.
 pub fn card<R>(ui: &mut Ui, p: &Palette, add: impl FnOnce(&mut Ui) -> R) -> R {
     let out = egui::Frame::none()
         .fill(p.card)
@@ -132,18 +108,15 @@ pub fn card<R>(ui: &mut Ui, p: &Palette, add: impl FnOnce(&mut Ui) -> R) -> R {
     out
 }
 
-/// The small dim capitals that open a card. One per card, nothing louder.
 pub fn section_title(ui: &mut Ui, p: &Palette, text: &str) {
     ui.label(egui::RichText::new(text).size(12.0).strong().color(p.dim));
     ui.add_space(8.0);
 }
 
-/// One line of quiet explanation under a control.
 pub fn hint(ui: &mut Ui, p: &Palette, text: &str) {
     ui.label(egui::RichText::new(text).size(11.5).color(p.dim));
 }
 
-/// The one loud control on a screen: accent-filled pill, generous padding.
 pub fn primary_button(ui: &mut Ui, p: &Palette, text: &str) -> Response {
     let padded = format!("  {text}  ");
     ui.add(
@@ -156,7 +129,6 @@ pub fn primary_button(ui: &mut Ui, p: &Palette, text: &str) -> Response {
     )
 }
 
-/// A destructive confirmation. Red is earned, not decorative.
 pub fn danger_button(ui: &mut Ui, p: &Palette, text: &str) -> Response {
     ui.add(
         egui::Button::new(egui::RichText::new(text).size(13.0).color(Color32::WHITE))
@@ -165,7 +137,6 @@ pub fn danger_button(ui: &mut Ui, p: &Palette, text: &str) -> Response {
     )
 }
 
-/// A quiet inline action: no fill until hovered, dim text.
 pub fn quiet_button(ui: &mut Ui, p: &Palette, text: &str) -> Response {
     ui.add(
         egui::Button::new(egui::RichText::new(text).size(13.0).color(p.dim))
@@ -174,7 +145,6 @@ pub fn quiet_button(ui: &mut Ui, p: &Palette, text: &str) -> Response {
     )
 }
 
-/// A status dot: a filled circle when on, a ring when off.
 pub fn status_dot(ui: &mut Ui, color: Color32, on: bool) {
     let (rect, _) = ui.allocate_exact_size(Vec2::splat(10.0), Sense::hover());
     let c = rect.center();
@@ -185,8 +155,6 @@ pub fn status_dot(ui: &mut Ui, color: Color32, on: bool) {
     }
 }
 
-/// The switch. Slides in 120 ms on egui's own animation clock, so it runs at
-/// whatever the display refreshes at. Returns `changed()` like a checkbox.
 pub fn toggle(ui: &mut Ui, p: &Palette, on: &mut bool) -> Response {
     let size = Vec2::new(42.0, 24.0);
     let (rect, mut response) = ui.allocate_exact_size(size, Sense::click());
@@ -199,8 +167,6 @@ pub fn toggle(ui: &mut Ui, p: &Palette, on: &mut bool) -> Response {
             .ctx()
             .animate_bool_with_time(response.id, *on, 0.12);
         let track = mix(p.raised, p.accent, t);
-        // The knob must read against both ends of the track: it borrows the
-        // accent's own contrast colour once the switch is on.
         let knob_colour = mix(Color32::WHITE, p.on_accent, t);
         let painter = ui.painter();
         painter.rect_filled(rect, Radius::same(12.0), track);
@@ -218,8 +184,6 @@ fn mix(a: Color32, b: Color32, t: f32) -> Color32 {
     Color32::from_rgb(l(a.r(), b.r()), l(a.g(), b.g()), l(a.b(), b.b()))
 }
 
-/// A full settings row: title + optional hint on the left, a switch on the
-/// right, the whole row clickable. Returns true when the value flipped.
 pub fn switch_row(ui: &mut Ui, p: &Palette, title: &str, sub: Option<&str>, on: &mut bool) -> bool {
     let mut changed = false;
     ui.horizontal(|ui| {

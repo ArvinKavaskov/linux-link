@@ -1,18 +1,3 @@
-//! Injects the tablet's input into the session through /dev/uinput.
-//!
-//! This is the path for every compositor except GNOME (which has a proper
-//! remote-desktop D-Bus API, see `backends::MutterSession`). Two virtual
-//! devices are created: an absolute pointer and a keyboard. Absolute pointer
-//! devices — the same species as a VM's tablet mouse — get mapped by libinput
-//! across the whole output layout, which is exactly the property we need: we
-//! know where the virtual monitor sits in that layout, so a normalized tablet
-//! coordinate becomes one absolute position, no grabs, no focus games.
-//!
-//! Finger touches arrive raw and are translated here rather than on the
-//! tablet: one finger drives the pointer (touch = click, like any touchscreen),
-//! two fingers scroll. Keeping the translation on the PC means the Android
-//! side stays a dumb sensor and future backends (GNOME) can consume the same
-//! raw events natively.
 
 use anyhow::{Context, Result};
 use evdev::uinput::VirtualDevice;
@@ -25,29 +10,15 @@ use std::collections::HashMap;
 use super::{RemoteInput, Rect};
 
 const ABS_RANGE: i32 = 65535;
-/// Finger travel (in desktop pixels) worth one wheel detent.
 const SCROLL_STEP: f64 = 18.0;
-/// Pressure resolution of the virtual pen. 4096 levels is what mid-range
-/// Wacom hardware reports, and it is far finer than any tablet digitizer.
 const PRESSURE_MAX: i32 = 4095;
-/// Tilt is reported in degrees from the vertical, per axis.
 const TILT_LIMIT: i32 = 90;
 
 pub struct UinputSink {
     pointer: VirtualDevice,
     keyboard: VirtualDevice,
-    /// A separate device declaring BTN_TOOL_PEN, so udev tags it
-    /// ID_INPUT_TABLET and libinput routes it through its tablet-tool path.
-    /// That is the whole reason drawing applications see pressure at all: a
-    /// pointer device with an ABS_PRESSURE axis bolted on is still a mouse.
     pen: VirtualDevice,
-    /// Which tool bit is currently asserted, so we can retract it before
-    /// asserting the other one — a digitizer never has pen and rubber in
-    /// range at the same time.
     pen_tool: Option<KeyCode>,
-    /// Where the tablet's monitor sits in the desktop, and how big the whole
-    /// desktop is — the two rectangles that turn a normalized coordinate into
-    /// an absolute one.
     monitor: Rect,
     desktop: Rect,
     touch: TouchTranslator,
@@ -75,8 +46,6 @@ impl UinputSink {
 
         let pen = build_pen()?;
 
-        // Every ordinary key: 1 (ESC) through 248 covers the whole keyboard
-        // block including media keys, without the buttons range.
         let mut keys = AttributeSet::<KeyCode>::new();
         for code in 1..=248u16 {
             keys.insert(KeyCode::new(code));
@@ -110,7 +79,6 @@ impl UinputSink {
         Ok(())
     }
 
-    /// Drives the gestures that only a clock can notice (the long press).
     pub fn tick(&mut self, now: u64) -> Result<()> {
         let actions = self.touch.tick(now);
         self.apply(actions)
@@ -160,10 +128,6 @@ impl UinputSink {
         Ok(())
     }
 
-    /// One stylus report. The tool bit (pen or rubber) is the digitizer's
-    /// notion of "in range"; BTN_TOUCH is the tip actually pressing. Both are
-    /// required — a tablet tool that never announces itself is ignored by
-    /// libinput, and one that never lifts leaves applications drawing forever.
     #[allow(clippy::too_many_arguments)]
     fn pen_event(
         &mut self,
@@ -185,8 +149,6 @@ impl UinputSink {
             Some(KeyCode::BTN_TOOL_PEN)
         };
 
-        // Flipping the stylus over is a tool change: retract the old one (tip
-        // up first, or the release is lost with it) before announcing the new.
         if self.pen_tool != wanted {
             if let Some(old) = self.pen_tool.take() {
                 self.pen.emit(&[
@@ -222,8 +184,6 @@ impl UinputSink {
                 AbsoluteAxisCode::ABS_TILT_Y.0,
                 tilt_y.clamp(-limit, limit) as i32,
             ),
-            // Hovering is distance 1, contact is distance 0 — some apps use it
-            // to fade a brush cursor in as the pen approaches.
             InputEvent::new(
                 EventType::ABSOLUTE.0,
                 AbsoluteAxisCode::ABS_DISTANCE.0,
@@ -241,7 +201,6 @@ impl UinputSink {
             events.push(InputEvent::new(
                 EventType::RELATIVE.0,
                 RelativeAxisCode::REL_WHEEL.0,
-                // Finger moves down → content follows the finger → wheel up.
                 -dy.signum() as i32,
             ));
         }
@@ -259,13 +218,6 @@ impl UinputSink {
     }
 }
 
-/// A virtual graphics tablet.
-///
-/// The shape of the device is what matters, not the events: udev's `input_id`
-/// builtin tags anything carrying BTN_TOOL_PEN together with ABS_X/ABS_Y as
-/// `ID_INPUT_TABLET`, and libinput then handles it as a tablet tool rather
-/// than a mouse. That single distinction is what makes pressure reach Krita,
-/// GIMP or Xournal++ instead of being silently discarded.
 fn build_pen() -> Result<VirtualDevice> {
     let mut keys = AttributeSet::<KeyCode>::new();
     for k in [
@@ -276,8 +228,6 @@ fn build_pen() -> Result<VirtualDevice> {
     ] {
         keys.insert(k);
     }
-    // DIRECT: the tool touches the surface it points at, like a screen tablet
-    // — so the driver maps it 1:1 instead of treating it as an opaque pad.
     let mut props = AttributeSet::<PropType>::new();
     props.insert(PropType::DIRECT);
 
@@ -304,53 +254,27 @@ fn build_pen() -> Result<VirtualDevice> {
         .context("create the virtual pen")
 }
 
-/// What a raw touch event should become on a pointer-only device.
 #[derive(Debug, PartialEq)]
 pub enum TouchAction {
     Move(f64, f64),
-    /// The left button, held for the duration of a drag.
     Button(bool),
-    /// A complete right click at the current position — press and release,
-    /// because no touch gesture can hold a right button down meaningfully.
     RightClick,
     Wheel(f64, f64),
 }
-/// Turns raw finger contacts into pointer actions.
-///
-/// One finger is a pointer with the left button held, so tapping and dragging
-/// work the way they do on any touchscreen. Two fingers scroll. And because a
-/// tablet has no second mouse button, two gestures produce a right click: a
-/// finger held still for [`LONG_PRESS_MS`], and a quick two-finger tap — the
-/// same pair of conventions every touchpad driver settled on.
-///
-/// The logic is pure: no device handle, and the clock arrives as a parameter,
-/// so every gesture above can be unit-tested to the millisecond.
 #[derive(Default)]
 pub struct TouchTranslator {
     slots: HashMap<u32, (f64, f64)>,
     dragging: bool,
-    /// Accumulated two-finger travel, in normalized units scaled by SCROLL_STEP
-    /// at consumption time.
     scroll_acc: (f64, f64),
     last_centroid: Option<(f64, f64)>,
-    /// Approximate size of the tablet monitor, used to turn normalized deltas
-    /// into something like pixels for the scroll threshold.
     scale: (f64, f64),
-    /// When and where the single finger landed, while a long press is still
-    /// possible. Cleared as soon as the gesture is disqualified.
     press: Option<(u64, f64, f64)>,
-    /// When the second finger landed, and whether the pair ever scrolled —
-    /// together they decide whether the lift was a two-finger tap.
     two_at: Option<u64>,
     scrolled: bool,
 }
 
-/// A finger held this long without travelling is a right click.
 const LONG_PRESS_MS: u64 = 500;
-/// How far (in desktop pixels) a finger may drift and still count as held.
 const LONG_PRESS_SLOP: f64 = 12.0;
-/// Two fingers down and back up inside this window, without scrolling, are a
-/// right click too.
 const TWO_FINGER_TAP_MS: u64 = 250;
 
 impl TouchTranslator {
@@ -366,8 +290,6 @@ impl TouchTranslator {
         }
     }
 
-    /// ph: 0 = down, 1 = move, 2 = up, 3 = cancel. `now` is a monotonic
-    /// millisecond counter; only differences matter.
     pub fn push(&mut self, id: u32, ph: u8, x: f64, y: f64, now: u64) -> Vec<TouchAction> {
         let (sw, sh) = self.px();
         let mut out = Vec::new();
@@ -382,7 +304,6 @@ impl TouchTranslator {
                         self.press = Some((now, x, y));
                     }
                     2 => {
-                        // The second finger turns a drag into a scroll.
                         if self.dragging {
                             out.push(TouchAction::Button(false));
                             self.dragging = false;
@@ -394,8 +315,6 @@ impl TouchTranslator {
                         self.scrolled = false;
                     }
                     _ => {
-                        // Three fingers or more: no gesture, and certainly not
-                        // a two-finger tap.
                         self.press = None;
                         self.two_at = None;
                     }
@@ -407,7 +326,6 @@ impl TouchTranslator {
                 }
                 if self.dragging && self.slots.len() == 1 {
                     out.push(TouchAction::Move(x, y));
-                    // Travelling means the user is dragging, not holding.
                     if let Some((_, ox, oy)) = self.press {
                         let moved = ((x - ox) * sw).hypot((y - oy) * sh);
                         if moved > LONG_PRESS_SLOP {
@@ -454,8 +372,6 @@ impl TouchTranslator {
                     self.two_at = None;
                     self.scrolled = false;
                 } else if self.slots.len() == 1 {
-                    // A finger left the pair; the survivor does not inherit a
-                    // drag, so there is nothing to restart.
                     self.last_centroid = None;
                 }
             }
@@ -463,8 +379,6 @@ impl TouchTranslator {
         out
     }
 
-    /// Called on a timer. A finger resting perfectly still generates no events
-    /// at all, so the long press can only be noticed by asking the clock.
     pub fn tick(&mut self, now: u64) -> Vec<TouchAction> {
         let Some((at, _, _)) = self.press else {
             return Vec::new();
@@ -474,8 +388,6 @@ impl TouchTranslator {
         }
         self.press = None;
         self.dragging = false;
-        // Let go of the left button we pressed on contact, then click right
-        // where the finger still rests.
         vec![TouchAction::Button(false), TouchAction::RightClick]
     }
 
@@ -510,7 +422,6 @@ mod tests {
         t.push(1, 0, 0.5, 0.5, 0);
         let second = t.push(2, 0, 0.5, 0.6, 5);
         assert_eq!(second, vec![TouchAction::Button(false)]);
-        // Both fingers travel 5% of the screen down → several wheel steps.
         let a = t.push(1, 1, 0.5, 0.55, 20);
         let b = t.push(2, 1, 0.5, 0.65, 25);
         let wheels = a.iter().chain(b.iter()).filter(|x| matches!(x, TouchAction::Wheel(..))).count();
@@ -533,7 +444,6 @@ mod tests {
         assert!(t.tick(LONG_PRESS_MS - 1).is_empty(), "fired too early");
         let fired = t.tick(LONG_PRESS_MS);
         assert_eq!(fired, vec![TouchAction::Button(false), TouchAction::RightClick]);
-        // Once fired the gesture is spent: no repeat, and the lift is silent.
         assert!(t.tick(LONG_PRESS_MS + 500).is_empty());
         assert!(t.push(1, 2, 0.4, 0.4, LONG_PRESS_MS + 600).is_empty());
     }
@@ -542,7 +452,6 @@ mod tests {
     fn a_dragging_finger_never_long_presses() {
         let mut t = TouchTranslator::with_scale(1000.0, 1000.0);
         t.push(1, 0, 0.4, 0.4, 0);
-        // 50 px of travel on a 1000 px monitor, well past the slop.
         t.push(1, 1, 0.45, 0.4, 100);
         assert!(t.tick(LONG_PRESS_MS + 100).is_empty());
     }

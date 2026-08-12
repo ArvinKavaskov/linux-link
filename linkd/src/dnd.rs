@@ -20,15 +20,8 @@ impl DndSync {
     }
 }
 
-/// Mirrors the PC's "do not disturb" to the phone.
-///
-/// v2 asked `gsettings` every three seconds — 1 200 process spawns an hour for
-/// a setting the user touches maybe twice a day. `gsettings monitor` is a
-/// single long-lived process that prints one line when the key actually
-/// changes, and sleeps the rest of the time.
 pub fn spawn_watcher(hub: Arc<ClipboardHub>, dnd: Arc<DndSync>) {
     tokio::spawn(async move {
-        // Publish the current state once, so a phone connecting now is in sync.
         let Some(initial) = read_pc_dnd().await else {
             tracing::info!("DND sync off: no GNOME notifications schema on this desktop");
             return;
@@ -56,7 +49,6 @@ async fn monitor(hub: &Arc<ClipboardHub>, dnd: &Arc<DndSync>) -> anyhow::Result<
 
     let mut lines = BufReader::new(stdout).lines();
     while let Some(line) = lines.next_line().await? {
-        // Format: "show-banners: false"
         let Some(value) = line.split(':').nth(1) else { continue };
         let cur = value.trim() == "false";
         let prev = dnd.last.swap(cur as i8, Ordering::Relaxed);
@@ -69,7 +61,6 @@ async fn monitor(hub: &Arc<ClipboardHub>, dnd: &Arc<DndSync>) -> anyhow::Result<
     anyhow::bail!("gsettings monitor exited")
 }
 
-/// Last resort for desktops without GSettings notifications keys.
 async fn poll(hub: Arc<ClipboardHub>, dnd: Arc<DndSync>) {
     loop {
         tokio::time::sleep(std::time::Duration::from_secs(3)).await;

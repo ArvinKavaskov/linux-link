@@ -6,15 +6,7 @@ import android.os.Build
 import android.service.quicksettings.Tile
 import android.service.quicksettings.TileService
 
-/**
- * The Quick Settings tile for the second screen: swipe down, tap, and this
- * device is a monitor — without ever opening the app.
- *
- * The tile tells the truth before it is tapped: active when a PC is
- * connected, inactive with a one-word reason when none is.
- */
 class SecondScreenTileService : TileService() {
-
     override fun onStartListening() {
         super.onStartListening()
         val tile = qsTile ?: return
@@ -32,8 +24,6 @@ class SecondScreenTileService : TileService() {
     }
 
     override fun onClick() {
-        // Feature off on this device (the phone default): the tile opens the
-        // app on the switch instead of a screen that would refuse to work.
         val target = if (AppPrefs.secondScreenEnabled(this))
             SecondScreenActivity::class.java else MainActivity::class.java
         val intent = Intent(this, target)
