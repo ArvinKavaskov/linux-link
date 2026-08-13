@@ -26,6 +26,7 @@ class NotificationRelayService : NotificationListenerService() {
         val extras = sbn.notification.extras
         val title = extras.getCharSequence(Notification.EXTRA_TITLE)?.toString().orEmpty()
         val body = extras.getCharSequence(Notification.EXTRA_TEXT)?.toString().orEmpty()
+        val bodyFull = fullText(extras, body)
         if (title.isEmpty() && body.isEmpty()) return
 
         val replyAction = findReplyAction(sbn.notification)
@@ -37,6 +38,7 @@ class NotificationRelayService : NotificationListenerService() {
             put("app", appLabel(sbn.packageName))
             put("title", title)
             put("body", body)
+            put("body_full", bodyFull)
             put("can_reply", replyAction != null)
         })
         Log.d(TAG, "→ ${sbn.packageName} : $title (reply=${replyAction != null})")
@@ -49,6 +51,26 @@ class NotificationRelayService : NotificationListenerService() {
             put("type", "notification_dismissed")
             put("key", sbn.key)
         })
+    }
+
+
+    private fun fullText(extras: Bundle, fallback: String): String {
+        extras.getParcelableArray(Notification.EXTRA_MESSAGES)?.let { arr ->
+            val msgs = Notification.MessagingStyle.Message.getMessagesFromBundleArray(arr)
+            if (msgs.isNotEmpty()) {
+                return msgs.joinToString("\n") { m ->
+                    val who = m.senderPerson?.name?.toString().orEmpty()
+                    val what = m.text?.toString().orEmpty()
+                    if (who.isEmpty()) what else "$who: $what"
+                }
+            }
+        }
+        extras.getCharSequence(Notification.EXTRA_BIG_TEXT)?.toString()
+            ?.takeIf { it.isNotBlank() }?.let { return it }
+        extras.getCharSequenceArray(Notification.EXTRA_TEXT_LINES)?.let { lines ->
+            if (lines.isNotEmpty()) return lines.joinToString("\n")
+        }
+        return fallback
     }
 
     private fun shouldRelay(sbn: StatusBarNotification): Boolean {

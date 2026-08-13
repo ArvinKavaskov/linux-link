@@ -114,6 +114,7 @@ install -m755 target/release/linkd            "$BIN_DIR/linkd"
 install -m755 target/release/linux-link-gui   "$BIN_DIR/linux-link-gui"
 install -m755 target/release/linux-link-pair  "$BIN_DIR/linux-link-pair"
 install -m755 target/release/linux-link-settings "$BIN_DIR/linux-link-settings"
+install -m755 target/release/linux-link-message "$BIN_DIR/linux-link-message"
 
 say "App icon"
 mkdir -p "$ICON_DIR"

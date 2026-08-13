@@ -11,6 +11,7 @@ pub struct Notifier {
     ids: Mutex<HashMap<String, u32>>,
     reply_targets: Mutex<HashMap<u32, (String, String)>>,
     open_targets: Mutex<HashMap<u32, String>>,
+    view_targets: Mutex<HashMap<u32, (String, String, String)>>,
     hub: Arc<ClipboardHub>,
 }
 
@@ -28,6 +29,7 @@ impl Notifier {
             ids: Mutex::new(HashMap::new()),
             reply_targets: Mutex::new(HashMap::new()),
             open_targets: Mutex::new(HashMap::new()),
+            view_targets: Mutex::new(HashMap::new()),
             hub,
         });
         if notifier.conn.is_some() {
@@ -37,12 +39,23 @@ impl Notifier {
         notifier
     }
 
-    pub async fn show(&self, key: &str, app: &str, title: &str, body: &str, can_reply: bool) {
+    pub async fn show(
+        &self,
+        key: &str,
+        app: &str,
+        title: &str,
+        body: &str,
+        body_full: &str,
+        can_reply: bool,
+    ) {
         let Some(conn) = &self.conn else { return };
         let replaces_id = { self.ids.lock().await.get(key).copied().unwrap_or(0) };
 
         let summary = if title.is_empty() { app.to_string() } else { format!("{app} — {title}") };
-        let actions: Vec<&str> = if can_reply { vec!["reply", "Reply"] } else { vec![] };
+        let mut actions: Vec<&str> = vec!["default", "Show", "view", "Show"];
+        if can_reply {
+            actions.extend(["reply", "Reply"]);
+        }
         let hints: HashMap<String, Value> = HashMap::new();
         let result = conn
             .call_method(
@@ -67,6 +80,11 @@ impl Notifier {
             Ok(reply) => match reply.body().deserialize::<u32>() {
                 Ok(id) => {
                     self.ids.lock().await.insert(key.to_string(), id);
+                    let full = if body_full.trim().is_empty() { body } else { body_full };
+                    self.view_targets.lock().await.insert(
+                        id,
+                        (app.to_string(), title.to_string(), full.to_string()),
+                    );
                     if can_reply {
                         self.reply_targets
                             .lock()
@@ -158,17 +176,48 @@ impl Notifier {
                         tokio::spawn(async move { me.prompt_and_send(key, label).await });
                     }
                 }
-                "open" | "default" => {
+                "open" => {
                     let url = { self.open_targets.lock().await.get(&id).cloned() };
                     if let Some(url) = url {
                         tracing::info!("↗ Opening the page in the browser");
                         let _ = tokio::process::Command::new("xdg-open").arg(&url).spawn();
                     }
                 }
+                "view" | "default" => {
+                    let url = { self.open_targets.lock().await.get(&id).cloned() };
+                    if let Some(url) = url {
+                        tracing::info!("↗ Opening the page in the browser");
+                        let _ = tokio::process::Command::new("xdg-open").arg(&url).spawn();
+                        continue;
+                    }
+                    let target = { self.view_targets.lock().await.get(&id).cloned() };
+                    if let Some((app, title, full)) = target {
+                        Self::open_viewer(&app, &title, &full).await;
+                    }
+                }
                 _ => {}
             }
         }
     }
+
+
+async fn open_viewer(app: &str, title: &str, full: &str) {
+    let path = std::env::temp_dir().join(format!("linuxlink-msg-{}.txt", std::process::id()));
+    if tokio::fs::write(&path, full).await.is_err() {
+        return;
+    }
+    let bin = std::env::current_exe()
+        .ok()
+        .and_then(|p| p.parent().map(|d| d.join("linux-link-message")))
+        .filter(|p| p.is_file())
+        .unwrap_or_else(|| std::path::PathBuf::from("linux-link-message"));
+    tracing::info!("💬 Opening the full message from {app}");
+    let _ = tokio::process::Command::new(bin)
+        .arg(app)
+        .arg(title)
+        .arg(&path)
+        .spawn();
+}
 
     async fn prompt_and_send(&self, key: String, label: String) {
         let output = tokio::process::Command::new("zenity")

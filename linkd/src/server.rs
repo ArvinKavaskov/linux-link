@@ -199,9 +199,9 @@ async fn handle_stream(
                 Message::HelloOk { device_name: identity.device_name.clone() }
             }
             Message::Ping { seq, sent_at_ms } if trusted => Message::Pong { seq, sent_at_ms },
-            Message::Notification { key, app, title, body, can_reply } if trusted => {
+            Message::Notification { key, app, title, body, body_full, can_reply } if trusted => {
                 tracing::info!("🔔 {app}: {title}{}", if can_reply { " (replyable)" } else { "" });
-                notifier.show(&key, &app, &title, &body, can_reply).await;
+                notifier.show(&key, &app, &title, &body, &body_full, can_reply).await;
                 Message::Ok
             }
             Message::NotificationDismissed { key } if trusted => {
@@ -244,6 +244,11 @@ async fn handle_stream(
                     }
                     Err(e) => tracing::warn!("mic: {e:#}"),
                 }
+                let _ = send.finish();
+                return Ok(());
+            }
+            Message::PhoneAudioStart { sample_rate, channels } if trusted => {
+                stream_phone_audio(&mut reader, sample_rate, channels).await;
                 let _ = send.finish();
                 return Ok(());
             }
@@ -376,6 +381,7 @@ async fn handle_stream(
             | Message::WebcamStart { .. }
             | Message::MicStart { .. }
             | Message::SpeakerStart { .. }
+            | Message::PhoneAudioStart { .. }
             | Message::DisplayStart { .. }
             | Message::SyncIndex { .. }
             | Message::FileStart { .. }
@@ -438,6 +444,50 @@ async fn stream_speaker(
             }
         }
     }
+}
+
+
+async fn stream_phone_audio(reader: &mut BufReader<quinn::RecvStream>, rate: u32, channels: u8) {
+    let (program, args): (&str, Vec<String>) = if crate::display::has_cmd("pw-cat") {
+        ("pw-cat", vec![
+            "--playback".into(), "--rate".into(), rate.to_string(),
+            "--channels".into(), channels.to_string(),
+            "--format".into(), "s16".into(), "-".into(),
+        ])
+    } else if crate::display::has_cmd("paplay") {
+        ("paplay", vec![
+            "--raw".into(), format!("--rate={rate}"),
+            format!("--channels={channels}"), "--format=s16le".into(),
+        ])
+    } else if crate::display::has_cmd("aplay") {
+        ("aplay", vec![
+            "-q".into(), "-t".into(), "raw".into(), "-f".into(), "S16_LE".into(),
+            "-r".into(), rate.to_string(), "-c".into(), channels.to_string(), "-".into(),
+        ])
+    } else {
+        tracing::warn!("phone audio: no player found (pw-cat, paplay or aplay)");
+        return;
+    };
+    let mut child = match tokio::process::Command::new(program)
+        .args(&args)
+        .stdin(std::process::Stdio::piped())
+        .stdout(std::process::Stdio::null())
+        .stderr(std::process::Stdio::null())
+        .kill_on_drop(true)
+        .spawn()
+    {
+        Ok(c) => c,
+        Err(e) => {
+            tracing::warn!("phone audio: cannot start {program}: {e}");
+            return;
+        }
+    };
+    let Some(mut stdin) = child.stdin.take() else { return };
+    tracing::info!("📢 Phone audio playing through {program} ({rate} Hz, {channels} ch)");
+    let _ = tokio::io::copy(reader, &mut stdin).await;
+    drop(stdin);
+    let _ = child.kill().await;
+    tracing::info!("Phone audio stream ended");
 }
 
 async fn stream_display(

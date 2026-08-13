@@ -24,6 +24,8 @@ pub enum Message {
         title: String,
         body: String,
         #[serde(default)]
+        body_full: String,
+        #[serde(default)]
         can_reply: bool,
     },
     NotificationDismissed { key: String },
@@ -67,6 +69,10 @@ pub enum Message {
     Dnd { on: bool },
     WebcamStart { width: u32, height: u32 },
     MicStart { sample_rate: u32, channels: u32 },
+    PhoneAudioStart {
+        sample_rate: u32,
+        channels: u8,
+    },
     SpeakerStart { sample_rate: u32, channels: u32 },
     DisplayInvite,
     DisplayStart {

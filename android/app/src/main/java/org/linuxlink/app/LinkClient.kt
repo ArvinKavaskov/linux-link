@@ -185,6 +185,18 @@ class LinkClient(private val identity: Identity) {
         return stream.inputStream
     }
 
+    fun openPhoneAudio(sampleRate: Int, channels: Int): java.io.OutputStream {
+        val conn = connection ?: error("not connected")
+        val stream = conn.createStream(true)
+        val out = stream.outputStream
+        val header = JSONObject().apply {
+            put("type", "phone_audio_start"); put("sample_rate", sampleRate); put("channels", channels)
+        }
+        out.write((header.toString() + "\n").toByteArray())
+        out.flush()
+        return out
+    }
+
     class DisplayChannel(val input: java.io.InputStream, val output: java.io.OutputStream)
 
     fun openDisplay(width: Int, height: Int, fps: Int): DisplayChannel {

@@ -183,6 +183,17 @@ class MainActivity : ComponentActivity() {
         }
     }
 
+    private val projectionLauncher = registerForActivityResult(
+        ActivityResultContracts.StartActivityForResult()
+    ) { res ->
+        val data = res.data
+        if (res.resultCode == RESULT_OK && data != null) {
+            PhonePlaybackService.start(this, res.resultCode, data)
+        } else {
+            status = "Phone audio needs the capture permission"
+        }
+    }
+
     private val qrScanner = registerForActivityResult(ScanContract()) { result ->
         result.contents?.let { raw ->
             runCatching { QrPayload.parse(raw) }
@@ -370,6 +381,11 @@ class MainActivity : ComponentActivity() {
                 }
 
                 SectionCard("Sound and camera") {
+                    SwitchRow(
+                        "Phone audio on PC",
+                        "Voice messages and media from this phone play on the PC",
+                        PhonePlaybackService.running,
+                    ) { togglePhoneAudio() }
                     SwitchRow(
                         "PC speaker",
                         "The PC plays its sound through this device",
@@ -627,6 +643,27 @@ class MainActivity : ComponentActivity() {
                 }
             }
         }
+    }
+
+    private fun togglePhoneAudio() {
+        if (PhonePlaybackService.running) {
+            PhonePlaybackService.stop(this)
+            return
+        }
+        if (LinkForegroundService.activeClient == null) {
+            status = "PC not connected"
+            return
+        }
+        if (checkSelfPermission(android.Manifest.permission.RECORD_AUDIO) !=
+            android.content.pm.PackageManager.PERMISSION_GRANTED
+        ) {
+            micPermLauncher.launch(android.Manifest.permission.RECORD_AUDIO)
+            status = "Allow the microphone, then flip the switch again"
+            return
+        }
+        val mgr = getSystemService(MEDIA_PROJECTION_SERVICE)
+                as android.media.projection.MediaProjectionManager
+        projectionLauncher.launch(mgr.createScreenCaptureIntent())
     }
 
     private fun switchToPc(pc: PairedPc) {
