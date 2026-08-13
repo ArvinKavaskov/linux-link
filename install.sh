@@ -98,7 +98,7 @@ if [ "$BUILD" = 1 ]; then
     fi
     say "Building (release, may take a few minutes)…"
     cargo build --release \
-        --bin linkd --bin linux-link-gui --bin linux-link-pair --bin linux-link-settings
+        --bin linkd --bin linux-link-gui --bin linux-link-pair --bin linux-link-settings --bin linux-link-message
 fi
 
 for b in linkd linux-link-gui linux-link-pair linux-link-settings; do
