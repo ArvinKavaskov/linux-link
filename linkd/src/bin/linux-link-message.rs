@@ -12,14 +12,16 @@ struct MessageApp {
 }
 
 impl eframe::App for MessageApp {
+    fn clear_color(&self, _visuals: &egui::Visuals) -> [f32; 4] {
+        egui::Rgba::TRANSPARENT.to_array()
+    }
+
     fn update(&mut self, ctx: &egui::Context, _frame: &mut eframe::Frame) {
-        let p = theme::frame_palette(ctx);
         if ctx.input(|i| i.key_pressed(egui::Key::Escape)) {
             ctx.send_viewport_cmd(egui::ViewportCommand::Close);
         }
-        egui::CentralPanel::default()
-            .frame(egui::Frame::none().fill(p.bg).inner_margin(20.0))
-            .show(ctx, |ui| {
+        theme::window_frame(ctx, false, |ui, p| {
+            {
                 ui.label(egui::RichText::new(&self.app).size(12.0).strong().color(p.dim));
                 if !self.title.is_empty() {
                     ui.label(egui::RichText::new(&self.title).size(18.0).strong().color(p.text));
@@ -27,7 +29,7 @@ impl eframe::App for MessageApp {
                 ui.add_space(10.0);
                 let footer = 46.0;
                 let body_height = ui.available_height() - footer;
-                theme::card(ui, &p, |ui| {
+                theme::card(ui, p, |ui| {
                     egui::ScrollArea::vertical()
                         .max_height(body_height - 44.0)
                         .auto_shrink([false, false])
@@ -45,16 +47,17 @@ impl eframe::App for MessageApp {
                         Some(t) if t.elapsed().as_secs_f32() < 1.5 => "Copied ✔",
                         _ => "Copy",
                     };
-                    if theme::primary_button(ui, &p, label).clicked() {
+                    if theme::primary_button(ui, p, label).clicked() {
                         ctx.copy_text(self.body.clone());
                         self.copied_at = Some(std::time::Instant::now());
                         ctx.request_repaint_after(std::time::Duration::from_millis(200));
                     }
-                    if theme::quiet_button(ui, &p, "Close").clicked() {
+                    if theme::quiet_button(ui, p, "Close").clicked() {
                         ctx.send_viewport_cmd(egui::ViewportCommand::Close);
                     }
                 });
-            });
+            }
+        });
     }
 }
 
@@ -75,7 +78,9 @@ fn main() -> eframe::Result {
         viewport: egui::ViewportBuilder::default()
             .with_inner_size(Vec2::new(440.0, 520.0))
             .with_min_inner_size(Vec2::new(320.0, 240.0))
-            .with_app_id("linux-link-message"),
+            .with_app_id("linux-link-message")
+            .with_decorations(false)
+            .with_transparent(true),
         ..Default::default()
     };
     eframe::run_native(

@@ -158,14 +158,16 @@ impl PairApp {
 }
 
 impl eframe::App for PairApp {
+    fn clear_color(&self, _visuals: &egui::Visuals) -> [f32; 4] {
+        egui::Rgba::TRANSPARENT.to_array()
+    }
+
     fn update(&mut self, ctx: &egui::Context, _frame: &mut eframe::Frame) {
         ctx.request_repaint_after(std::time::Duration::from_millis(250));
-        let p = theme::frame_palette(ctx);
         let state = self.state.lock().unwrap().clone();
 
-        egui::CentralPanel::default()
-            .frame(egui::Frame::none().fill(p.bg).inner_margin(24.0))
-            .show(ctx, |ui| {
+        theme::window_frame(ctx, false, |ui, p| {
+            {
                 ui.vertical_centered(|ui| {
                     if let Some(logo) = &self.logo {
                         ui.add(
@@ -255,7 +257,7 @@ impl eframe::App for PairApp {
                                     .color(p.dim),
                             );
                             ui.add_space(14.0);
-                            if theme::primary_button(ui, &p, "Show a new code").clicked() {
+                            if theme::primary_button(ui, p, "Show a new code").clicked() {
                                 start_pairing(self.state.clone());
                             }
                         }
@@ -265,13 +267,14 @@ impl eframe::App for PairApp {
                             ui.add_space(8.0);
                             ui.label(egui::RichText::new(msg).size(14.0).color(p.text));
                             ui.add_space(14.0);
-                            if theme::primary_button(ui, &p, "Try again").clicked() {
+                            if theme::primary_button(ui, p, "Try again").clicked() {
                                 start_pairing(self.state.clone());
                             }
                         }
                     }
                 });
-            });
+            }
+        });
     }
 }
 
@@ -282,6 +285,8 @@ fn main() -> eframe::Result {
             .with_min_inner_size([440.0, 650.0])
             .with_resizable(false)
             .with_app_id("linux-link")
+            .with_decorations(false)
+            .with_transparent(true)
             .with_title("Linux Link — Pairing"),
         ..Default::default()
     };

@@ -93,6 +93,80 @@ fn lighten(c: Color32, by: i16) -> Color32 {
     Color32::from_rgb(f(c.r()), f(c.g()), f(c.b()))
 }
 
+
+pub fn window_frame(ctx: &egui::Context, show_minimize: bool, add: impl FnOnce(&mut Ui, &Palette)) {
+    let p = frame_palette(ctx);
+    let frame = egui::Frame {
+        fill: p.bg,
+        rounding: Radius::same(14.0),
+        stroke: Stroke::new(1.0, p.outline),
+        ..Default::default()
+    };
+    egui::CentralPanel::default().frame(frame).show(ctx, |ui| {
+        let full = ui.max_rect();
+        let bar_h = 36.0;
+        let bar = egui::Rect::from_min_size(full.min, Vec2::new(full.width(), bar_h));
+        let resp = ui.interact(bar, egui::Id::new("ll_titlebar"), Sense::click_and_drag());
+        if resp.drag_started_by(egui::PointerButton::Primary) {
+            ctx.send_viewport_cmd(egui::ViewportCommand::StartDrag);
+        }
+        if resp.double_clicked() {
+            let m = ctx.input(|i| i.viewport().maximized.unwrap_or(false));
+            ctx.send_viewport_cmd(egui::ViewportCommand::Maximized(!m));
+        }
+        let bar_inner = egui::Rect::from_min_max(
+            egui::Pos2::new(bar.min.x + 12.0, bar.min.y),
+            egui::Pos2::new(bar.max.x - 12.0, bar.max.y),
+        );
+        let mut bar_ui = ui.new_child(
+            egui::UiBuilder::new()
+                .max_rect(bar_inner)
+                .layout(egui::Layout::right_to_left(egui::Align::Center)),
+        );
+        if window_button(&mut bar_ui, &p, "✕", true).clicked() {
+            ctx.send_viewport_cmd(egui::ViewportCommand::Close);
+        }
+        if show_minimize {
+            bar_ui.add_space(6.0);
+            if window_button(&mut bar_ui, &p, "–", false).clicked() {
+                ctx.send_viewport_cmd(egui::ViewportCommand::Minimized(true));
+            }
+        }
+        let content = egui::Rect::from_min_max(
+            egui::Pos2::new(full.min.x + 20.0, full.min.y + bar_h),
+            egui::Pos2::new(full.max.x - 20.0, full.max.y - 20.0),
+        );
+        let mut content_ui = ui.new_child(
+            egui::UiBuilder::new()
+                .max_rect(content)
+                .layout(egui::Layout::top_down(egui::Align::Min)),
+        );
+        add(&mut content_ui, &p);
+    });
+}
+
+fn window_button(ui: &mut Ui, p: &Palette, glyph: &str, danger: bool) -> Response {
+    let (rect, resp) = ui.allocate_exact_size(Vec2::splat(22.0), Sense::click());
+    if ui.is_rect_visible(rect) {
+        let hovered = resp.hovered();
+        let fill = if hovered {
+            if danger { p.warn } else { lighten(p.raised, if ui.visuals().dark_mode { 16 } else { -12 }) }
+        } else {
+            p.raised
+        };
+        ui.painter().circle_filled(rect.center(), 9.0, fill);
+        let colour = if danger && hovered { Color32::WHITE } else { p.dim };
+        ui.painter().text(
+            rect.center(),
+            egui::Align2::CENTER_CENTER,
+            glyph,
+            egui::FontId::proportional(11.0),
+            colour,
+        );
+    }
+    resp
+}
+
 pub fn card<R>(ui: &mut Ui, p: &Palette, add: impl FnOnce(&mut Ui) -> R) -> R {
     let out = egui::Frame::none()
         .fill(p.card)

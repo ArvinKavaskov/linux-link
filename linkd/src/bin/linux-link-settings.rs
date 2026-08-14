@@ -261,24 +261,25 @@ impl SettingsApp {
 }
 
 impl eframe::App for SettingsApp {
+    fn clear_color(&self, _visuals: &egui::Visuals) -> [f32; 4] {
+        egui::Rgba::TRANSPARENT.to_array()
+    }
+
     fn update(&mut self, ctx: &egui::Context, _frame: &mut eframe::Frame) {
         if self.last_read.elapsed() >= REFRESH {
             self.refresh();
         }
         ctx.request_repaint_after(REFRESH);
 
-        let p = theme::frame_palette(ctx);
-        egui::CentralPanel::default()
-            .frame(egui::Frame::none().fill(p.bg).inner_margin(20.0))
-            .show(ctx, |ui| {
-                egui::ScrollArea::vertical().show(ui, |ui| {
-                    self.header(ui, &p);
-                    self.devices_card(ui, &p);
-                    self.behaviour_card(ui, &p);
-                    self.shortcuts_card(ui, &p);
-                    self.footer(ui, &p);
-                });
+        theme::window_frame(ctx, true, |ui, p| {
+            egui::ScrollArea::vertical().show(ui, |ui| {
+                self.header(ui, p);
+                self.devices_card(ui, p);
+                self.behaviour_card(ui, p);
+                self.shortcuts_card(ui, p);
+                self.footer(ui, p);
             });
+        });
     }
 }
 
@@ -559,6 +560,8 @@ fn main() -> eframe::Result {
             .with_inner_size([460.0, 720.0])
             .with_min_inner_size([420.0, 520.0])
             .with_app_id("linux-link")
+            .with_decorations(false)
+            .with_transparent(true)
             .with_title("Linux Link — Settings"),
         ..Default::default()
     };
