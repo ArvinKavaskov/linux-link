@@ -123,12 +123,12 @@ pub fn window_frame(ctx: &egui::Context, show_minimize: bool, add: impl FnOnce(&
                 .max_rect(bar_inner)
                 .layout(egui::Layout::right_to_left(egui::Align::Center)),
         );
-        if window_button(&mut bar_ui, &p, "✕", true).clicked() {
+        if window_button(&mut bar_ui, &p, true).clicked() {
             ctx.send_viewport_cmd(egui::ViewportCommand::Close);
         }
         if show_minimize {
-            bar_ui.add_space(6.0);
-            if window_button(&mut bar_ui, &p, "–", false).clicked() {
+            bar_ui.add_space(8.0);
+            if window_button(&mut bar_ui, &p, false).clicked() {
                 ctx.send_viewport_cmd(egui::ViewportCommand::Minimized(true));
             }
         }
@@ -145,24 +145,40 @@ pub fn window_frame(ctx: &egui::Context, show_minimize: bool, add: impl FnOnce(&
     });
 }
 
-fn window_button(ui: &mut Ui, p: &Palette, glyph: &str, danger: bool) -> Response {
-    let (rect, resp) = ui.allocate_exact_size(Vec2::splat(22.0), Sense::click());
+fn window_button(ui: &mut Ui, p: &Palette, close: bool) -> Response {
+    let (rect, resp) = ui.allocate_exact_size(Vec2::splat(20.0), Sense::click());
     if ui.is_rect_visible(rect) {
         let hovered = resp.hovered();
+        let c = rect.center();
+        let r = 6.5;
         let fill = if hovered {
-            if danger { p.warn } else { lighten(p.raised, if ui.visuals().dark_mode { 16 } else { -12 }) }
+            if close { p.warn } else { lighten(p.raised, if ui.visuals().dark_mode { 20 } else { -16 }) }
         } else {
             p.raised
         };
-        ui.painter().circle_filled(rect.center(), 9.0, fill);
-        let colour = if danger && hovered { Color32::WHITE } else { p.dim };
-        ui.painter().text(
-            rect.center(),
-            egui::Align2::CENTER_CENTER,
-            glyph,
-            egui::FontId::proportional(11.0),
-            colour,
-        );
+        let painter = ui.painter();
+        painter.circle_filled(c, r, fill);
+        painter.circle_stroke(c, r, Stroke::new(1.0, p.outline));
+        if hovered {
+            let g = 2.6;
+            let colour = if close { Color32::WHITE } else { p.text };
+            let stroke = Stroke::new(1.6, colour);
+            if close {
+                painter.line_segment(
+                    [egui::Pos2::new(c.x - g, c.y - g), egui::Pos2::new(c.x + g, c.y + g)],
+                    stroke,
+                );
+                painter.line_segment(
+                    [egui::Pos2::new(c.x - g, c.y + g), egui::Pos2::new(c.x + g, c.y - g)],
+                    stroke,
+                );
+            } else {
+                painter.line_segment(
+                    [egui::Pos2::new(c.x - g, c.y), egui::Pos2::new(c.x + g, c.y)],
+                    stroke,
+                );
+            }
+        }
     }
     resp
 }

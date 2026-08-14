@@ -45,8 +45,6 @@ struct DeviceStatus {
 #[derive(Deserialize, Default, Clone)]
 struct Status {
     #[serde(default)]
-    device_count: usize,
-    #[serde(default)]
     devices: Vec<DeviceStatus>,
     #[serde(default)]
     battery: i32,
@@ -299,7 +297,7 @@ impl SettingsApp {
                 ui.horizontal(|ui| {
                     let (text, colour, on) = if !self.world.alive {
                         ("Service stopped".to_string(), p.warn, false)
-                    } else if self.world.status.device_count > 0 {
+                    } else if !self.world.status.devices.is_empty() {
                         let bat = if self.world.status.battery >= 0 {
                             format!(
                                 " · {}%{}",
