@@ -20,7 +20,7 @@ impl eframe::App for MessageApp {
         if ctx.input(|i| i.key_pressed(egui::Key::Escape)) {
             ctx.send_viewport_cmd(egui::ViewportCommand::Close);
         }
-        theme::window_frame(ctx, false, |ui, p| {
+        theme::window_frame(ctx, "", false, |ui, p| {
             {
                 ui.label(egui::RichText::new(&self.app).size(12.0).strong().color(p.dim));
                 if !self.title.is_empty() {

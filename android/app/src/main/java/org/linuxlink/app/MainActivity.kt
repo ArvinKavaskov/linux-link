@@ -74,6 +74,7 @@ import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.vector.ImageVector
 import androidx.compose.ui.input.nestedscroll.nestedScroll
 import androidx.compose.ui.text.font.FontWeight
+import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.unit.dp
 import com.journeyapps.barcodescanner.ScanContract
 import com.journeyapps.barcodescanner.ScanOptions
@@ -125,9 +126,9 @@ private val LinkLight = lightColorScheme(
     onTertiary = Color(0xFFFFFFFF),
     tertiaryContainer = Color(0xFFF0F0F2),
     onTertiaryContainer = Color(0xFF1C1C1E),
-    background = Color(0xFFF4F4F6),
+    background = Color(0xFFF2F2F7),
     onBackground = Color(0xFF111113),
-    surface = Color(0xFFF4F4F6),
+    surface = Color(0xFFF2F2F7),
     onSurface = Color(0xFF111113),
     surfaceVariant = Color(0xFFEAEAED),
     onSurfaceVariant = Color(0xFF6E6E73),
@@ -437,6 +438,17 @@ class MainActivity : ComponentActivity() {
                     }
                 }
 
+                Text(
+                    if (LinkForegroundService.linkUp)
+                        "Linux Link · Connected to ${pairedName ?: "PC"} over LAN"
+                    else
+                        "Linux Link · Not connected",
+                    style = MaterialTheme.typography.bodySmall,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                    modifier = Modifier.fillMaxWidth().padding(vertical = 4.dp),
+                    textAlign = TextAlign.Center,
+                )
+
                 Spacer(Modifier.height(8.dp))
             }
         }
@@ -446,7 +458,7 @@ class MainActivity : ComponentActivity() {
     private fun ConnectionCard() {
         val up = LinkForegroundService.linkUp
         val dot by animateColorAsState(
-            targetValue = if (up) Color(0xFF34B463) else MaterialTheme.colorScheme.outline,
+            targetValue = if (up) Color(0xFF34C759) else MaterialTheme.colorScheme.outline,
             label = "connection dot",
         )
         Card(
@@ -611,7 +623,7 @@ class MainActivity : ComponentActivity() {
             Text(
                 if (on) onLabel else offLabel,
                 style = MaterialTheme.typography.labelLarge,
-                color = if (on) Color(0xFF34B463) else MaterialTheme.colorScheme.onSurfaceVariant,
+                color = if (on) Color(0xFF34C759) else MaterialTheme.colorScheme.onSurfaceVariant,
             )
         }
     }

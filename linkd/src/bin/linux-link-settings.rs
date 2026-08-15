@@ -1,5 +1,5 @@
 
-use eframe::egui::{self, Vec2};
+use eframe::egui;
 use serde::{Deserialize, Serialize};
 
 #[path = "../ui_theme.rs"]
@@ -119,6 +119,50 @@ fn forget_device(fingerprint: &str) -> Result<String, String> {
     Ok(removed.name)
 }
 
+
+fn draw_tab_icon(painter: &egui::Painter, rect: egui::Rect, tab: Tab, colour: egui::Color32) {
+    let c = rect.center();
+    let s = egui::Stroke::new(1.6, colour);
+    match tab {
+        Tab::Devices => {
+            let r = egui::Rect::from_center_size(c, egui::Vec2::new(9.0, 14.0));
+            painter.rect_stroke(r, egui::Rounding::same(2.5), s);
+            painter.circle_filled(egui::Pos2::new(c.x, r.max.y - 2.5), 0.9, colour);
+        }
+        Tab::General => {
+            for (dy, kx) in [(-3.0, -2.5), (3.0, 2.5)] {
+                painter.line_segment(
+                    [
+                        egui::Pos2::new(c.x - 6.0, c.y + dy),
+                        egui::Pos2::new(c.x + 6.0, c.y + dy),
+                    ],
+                    s,
+                );
+                painter.circle_filled(egui::Pos2::new(c.x + kx, c.y + dy), 2.2, colour);
+            }
+        }
+        Tab::Shortcuts => {
+            let r = egui::Rect::from_center_size(c, egui::Vec2::new(14.0, 11.0));
+            painter.rect_stroke(r, egui::Rounding::same(3.0), s);
+            painter.line_segment(
+                [
+                    egui::Pos2::new(c.x - 3.5, r.max.y - 3.2),
+                    egui::Pos2::new(c.x + 3.5, r.max.y - 3.2),
+                ],
+                s,
+            );
+        }
+        Tab::About => {
+            painter.circle_stroke(c, 7.0, s);
+            painter.circle_filled(egui::Pos2::new(c.x, c.y - 3.0), 1.1, colour);
+            painter.line_segment(
+                [egui::Pos2::new(c.x, c.y - 0.5), egui::Pos2::new(c.x, c.y + 3.5)],
+                s,
+            );
+        }
+    }
+}
+
 fn restart_service() -> Result<(), String> {
     let out = std::process::Command::new("systemctl")
         .args(["--user", "restart", "linkd"])
@@ -216,6 +260,14 @@ impl World {
     }
 }
 
+#[derive(Clone, Copy, PartialEq)]
+enum Tab {
+    Devices,
+    General,
+    Shortcuts,
+    About,
+}
+
 struct SettingsApp {
     world: World,
     last_read: Instant,
@@ -223,6 +275,7 @@ struct SettingsApp {
     pc_name: String,
     toast: Option<(String, bool)>,
     confirm_forget: Option<String>,
+    tab: Tab,
 }
 
 impl SettingsApp {
@@ -245,6 +298,7 @@ impl SettingsApp {
             pc_name: this_pc_name(),
             toast: None,
             confirm_forget: None,
+            tab: Tab::Devices,
         }
     }
 
@@ -269,65 +323,106 @@ impl eframe::App for SettingsApp {
         }
         ctx.request_repaint_after(REFRESH);
 
-        theme::window_frame(ctx, true, |ui, p| {
-            egui::ScrollArea::vertical().show(ui, |ui| {
-                self.header(ui, p);
-                self.devices_card(ui, p);
-                self.behaviour_card(ui, p);
-                self.shortcuts_card(ui, p);
-                self.footer(ui, p);
+        theme::window_frame(ctx, "Linux Link", true, |ui, p| {
+            let full = ui.max_rect();
+            let side = egui::Rect::from_min_max(
+                full.min,
+                egui::Pos2::new(full.min.x + 196.0, full.max.y),
+            );
+            ui.painter().rect_filled(
+                egui::Rect::from_min_max(
+                    egui::Pos2::new(side.min.x, side.min.y - 48.0),
+                    egui::Pos2::new(side.max.x, side.max.y),
+                ),
+                egui::Rounding {
+                    nw: 14.0,
+                    sw: 14.0,
+                    ne: 0.0,
+                    se: 0.0,
+                },
+                p.side,
+            );
+            let mut side_ui = ui.new_child(
+                egui::UiBuilder::new()
+                    .max_rect(side.shrink2(egui::Vec2::new(10.0, 8.0)))
+                    .layout(egui::Layout::top_down(egui::Align::Min)),
+            );
+            self.sidebar(&mut side_ui, p);
+            let content = egui::Rect::from_min_max(
+                egui::Pos2::new(side.max.x + 18.0, full.min.y + 4.0),
+                egui::Pos2::new(full.max.x - 18.0, full.max.y - 12.0),
+            );
+            let mut content_ui = ui.new_child(
+                egui::UiBuilder::new()
+                    .max_rect(content)
+                    .layout(egui::Layout::top_down(egui::Align::Min)),
+            );
+            egui::ScrollArea::vertical().show(&mut content_ui, |ui| {
+                ui.set_width(ui.available_width());
+                match self.tab {
+                    Tab::Devices => self.devices_tab(ui, p),
+                    Tab::General => self.general_tab(ui, p),
+                    Tab::Shortcuts => self.shortcuts_card(ui, p),
+                    Tab::About => self.about_tab(ui, p),
+                }
+                if let Some((msg, ok)) = self.toast.clone() {
+                    let colour = if ok { p.ok } else { p.warn };
+                    ui.add_space(4.0);
+                    ui.label(egui::RichText::new(msg).size(12.0).color(colour));
+                }
             });
         });
     }
 }
 
 impl SettingsApp {
-    fn header(&mut self, ui: &mut egui::Ui, p: &Palette) {
-        ui.horizontal(|ui| {
-            if let Some(logo) = &self.logo {
-                ui.add(
-                    egui::Image::new(logo)
-                        .fit_to_exact_size(Vec2::splat(44.0))
-                        .rounding(egui::Rounding::same(12.0)),
-                );
+    fn sidebar(&mut self, ui: &mut egui::Ui, p: &Palette) {
+        for (tab, label) in [
+            (Tab::Devices, "Devices"),
+            (Tab::General, "General"),
+            (Tab::Shortcuts, "Shortcuts"),
+            (Tab::About, "About"),
+        ] {
+            let selected = self.tab == tab;
+            let (rect, resp) = ui.allocate_exact_size(
+                egui::Vec2::new(ui.available_width(), 36.0),
+                egui::Sense::click(),
+            );
+            if resp.clicked() {
+                self.tab = tab;
             }
-            ui.add_space(8.0);
-            ui.vertical(|ui| {
-                ui.label(egui::RichText::new("Linux Link").size(21.0).strong().color(p.text));
-                ui.horizontal(|ui| {
-                    let (text, colour, on) = if !self.world.alive {
-                        ("Service stopped".to_string(), p.warn, false)
-                    } else if !self.world.status.devices.is_empty() {
-                        let bat = if self.world.status.battery >= 0 {
-                            format!(
-                                " · {}%{}",
-                                self.world.status.battery,
-                                if self.world.status.charging { " ⚡" } else { "" }
-                            )
-                        } else {
-                            String::new()
-                        };
-                        (format!("Connected{bat}"), p.ok, true)
-                    } else {
-                        ("Waiting for a phone".to_string(), p.dim, false)
-                    };
-                    theme::status_dot(ui, colour, on);
-                    ui.label(egui::RichText::new(text).size(13.0).color(colour));
-                });
-            });
-        });
-        ui.add_space(16.0);
+            let painter = ui.painter();
+            if selected || resp.hovered() {
+                painter.rect_filled(rect, egui::Rounding::same(7.0), p.raised);
+            }
+            let icon = egui::Rect::from_center_size(
+                egui::Pos2::new(rect.min.x + 22.0, rect.center().y),
+                egui::Vec2::splat(24.0),
+            );
+            painter.rect_filled(icon, egui::Rounding::same(6.0), p.accent);
+            draw_tab_icon(painter, icon, tab, p.on_accent);
+            painter.text(
+                egui::Pos2::new(rect.min.x + 40.0, rect.center().y),
+                egui::Align2::LEFT_CENTER,
+                label,
+                egui::FontId::proportional(13.0),
+                p.text,
+            );
+            ui.add_space(2.0);
+        }
+    }
 
+    fn devices_tab(&mut self, ui: &mut egui::Ui, p: &Palette) {
         if !self.world.alive {
             let mut restart = false;
             theme::card(ui, p, |ui| {
                 ui.label(
                     egui::RichText::new("The Linux Link service is not running.")
-                        .size(14.0)
+                        .size(13.0)
                         .color(p.text),
                 );
                 theme::hint(ui, p, "Pairing, sync and the second screen need it.");
-                ui.add_space(10.0);
+                ui.add_space(8.0);
                 if theme::primary_button(ui, p, "Restart the service").clicked() {
                     restart = true;
                 }
@@ -342,6 +437,52 @@ impl SettingsApp {
                 }
             }
         }
+        self.devices_card(ui, p);
+    }
+
+    fn general_tab(&mut self, ui: &mut egui::Ui, p: &Palette) {
+        self.behaviour_card(ui, p);
+        theme::card(ui, p, |ui| {
+            theme::section_title(ui, p, "THIS COMPUTER");
+            ui.horizontal(|ui| {
+                ui.label(egui::RichText::new("Name").size(13.0).color(p.text));
+                ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                    ui.label(egui::RichText::new(&self.pc_name).size(13.0).color(p.dim));
+                });
+            });
+        });
+    }
+
+    fn about_tab(&mut self, ui: &mut egui::Ui, p: &Palette) {
+        ui.vertical_centered(|ui| {
+            ui.add_space(24.0);
+            if let Some(logo) = &self.logo {
+                ui.add(
+                    egui::Image::new(logo)
+                        .fit_to_exact_size(egui::Vec2::splat(88.0))
+                        .rounding(egui::Rounding::same(22.0)),
+                );
+            }
+            ui.add_space(12.0);
+            ui.label(egui::RichText::new("Linux Link").size(20.0).strong().color(p.text));
+            ui.label(
+                egui::RichText::new(format!("Version {}", env!("CARGO_PKG_VERSION")))
+                    .size(12.0)
+                    .color(p.dim),
+            );
+            ui.add_space(8.0);
+            ui.label(
+                egui::RichText::new("Your phone and your Linux PC, working as one.")
+                    .size(12.5)
+                    .color(p.dim),
+            );
+            ui.add_space(14.0);
+            if theme::bordered_button(ui, p, "GitHub — ArvinKavaskov/linux-link").clicked() {
+                let _ = std::process::Command::new("xdg-open")
+                    .arg("https://github.com/ArvinKavaskov/linux-link")
+                    .spawn();
+            }
+        });
     }
 
     fn devices_card(&mut self, ui: &mut egui::Ui, p: &Palette) {
@@ -381,7 +522,19 @@ impl SettingsApp {
                     ui.vertical(|ui| {
                         ui.label(egui::RichText::new(&peer.name).size(14.0).color(p.text));
                         ui.label(
-                            egui::RichText::new(if online { "Connected" } else { "Not connected" })
+                            egui::RichText::new(if online {
+                                if self.world.status.battery >= 0 {
+                                    format!(
+                                        "Connected · {}%{}",
+                                        self.world.status.battery,
+                                        if self.world.status.charging { " ⚡" } else { "" }
+                                    )
+                                } else {
+                                    "Connected".to_string()
+                                }
+                            } else {
+                                "Not connected".to_string()
+                            })
                                 .size(11.5)
                                 .color(p.dim),
                         );
@@ -401,7 +554,18 @@ impl SettingsApp {
                 });
                 if i + 1 < peers.len() {
                     ui.add_space(6.0);
-                    ui.separator();
+                    let w = ui.available_width();
+                    let (r, _) = ui.allocate_exact_size(
+                        egui::Vec2::new(w, 1.0),
+                        egui::Sense::hover(),
+                    );
+                    ui.painter().line_segment(
+                        [
+                            egui::Pos2::new(r.min.x + 22.0, r.center().y),
+                            egui::Pos2::new(r.max.x, r.center().y),
+                        ],
+                        egui::Stroke::new(1.0, p.row_sep),
+                    );
                     ui.add_space(6.0);
                 }
             }
@@ -534,29 +698,13 @@ impl SettingsApp {
         }
     }
 
-    fn footer(&mut self, ui: &mut egui::Ui, p: &Palette) {
-        if let Some((msg, ok)) = self.toast.clone() {
-            let colour = if ok { p.ok } else { p.warn };
-            ui.label(egui::RichText::new(msg).size(12.0).color(colour));
-            ui.add_space(6.0);
-        }
-        ui.label(
-            egui::RichText::new(format!(
-                "{} · Linux Link {}",
-                self.pc_name,
-                env!("CARGO_PKG_VERSION")
-            ))
-            .size(11.0)
-            .color(p.dim),
-        );
-    }
 }
 
 fn main() -> eframe::Result {
     let options = eframe::NativeOptions {
         viewport: egui::ViewportBuilder::default()
-            .with_inner_size([460.0, 720.0])
-            .with_min_inner_size([420.0, 520.0])
+            .with_inner_size([720.0, 560.0])
+            .with_min_inner_size([640.0, 480.0])
             .with_app_id("linux-link")
             .with_decorations(false)
             .with_transparent(true)

@@ -4,6 +4,7 @@ use eframe::egui::{self, Color32, Response, Rounding as Radius, Sense, Stroke, U
 #[derive(Clone, Copy)]
 pub struct Palette {
     pub bg: Color32,
+    pub side: Color32,
     pub card: Color32,
     pub raised: Color32,
     pub text: Color32,
@@ -13,34 +14,39 @@ pub struct Palette {
     pub ok: Color32,
     pub warn: Color32,
     pub outline: Color32,
+    pub row_sep: Color32,
 }
 
 pub fn palette(dark: bool) -> Palette {
     if dark {
         Palette {
-            bg: Color32::from_rgb(0x00, 0x00, 0x00),
-            card: Color32::from_rgb(0x14, 0x14, 0x16),
-            raised: Color32::from_rgb(0x24, 0x24, 0x27),
+            bg: Color32::from_rgb(0x1E, 0x1E, 0x22),
+            side: Color32::from_rgb(0x27, 0x27, 0x2B),
+            card: Color32::from_rgb(0x2A, 0x2A, 0x2E),
+            raised: Color32::from_rgba_unmultiplied(0x78, 0x78, 0x80, 77),
             text: Color32::from_rgb(0xF5, 0xF5, 0xF7),
             dim: Color32::from_rgb(0x98, 0x98, 0x9E),
             accent: Color32::from_rgb(0xF5, 0xF5, 0xF7),
-            on_accent: Color32::from_rgb(0x11, 0x11, 0x13),
-            ok: Color32::from_rgb(0x4C, 0xC9, 0x6E),
+            on_accent: Color32::from_rgb(0x0A, 0x0A, 0x0A),
+            ok: Color32::from_rgb(0x30, 0xD1, 0x58),
             warn: Color32::from_rgb(0xE5, 0x6B, 0x6B),
-            outline: Color32::from_rgba_unmultiplied(0xFF, 0xFF, 0xFF, 0x1C),
+            outline: Color32::from_rgba_unmultiplied(0xFF, 0xFF, 0xFF, 26),
+            row_sep: Color32::from_rgba_unmultiplied(0x54, 0x54, 0x58, 128),
         }
     } else {
         Palette {
-            bg: Color32::from_rgb(0xF4, 0xF4, 0xF6),
+            bg: Color32::from_rgb(0xF4, 0xF4, 0xF7),
+            side: Color32::from_rgb(0xE9, 0xE8, 0xEE),
             card: Color32::WHITE,
-            raised: Color32::from_rgb(0xEC, 0xEC, 0xEF),
-            text: Color32::from_rgb(0x11, 0x11, 0x13),
-            dim: Color32::from_rgb(0x6E, 0x6E, 0x73),
-            accent: Color32::from_rgb(0x11, 0x11, 0x13),
+            raised: Color32::from_rgba_unmultiplied(0x78, 0x78, 0x80, 36),
+            text: Color32::from_rgb(0x1D, 0x1D, 0x1F),
+            dim: Color32::from_rgb(0x86, 0x86, 0x8B),
+            accent: Color32::from_rgb(0x1D, 0x1D, 0x1F),
             on_accent: Color32::WHITE,
-            ok: Color32::from_rgb(0x1F, 0x9D, 0x4D),
+            ok: Color32::from_rgb(0x34, 0xC7, 0x59),
             warn: Color32::from_rgb(0xC9, 0x41, 0x41),
-            outline: Color32::from_rgba_unmultiplied(0x00, 0x00, 0x00, 0x1A),
+            outline: Color32::from_rgba_unmultiplied(0x00, 0x00, 0x00, 20),
+            row_sep: Color32::from_rgba_unmultiplied(0x3C, 0x3C, 0x43, 46),
         }
     }
 }
@@ -94,7 +100,12 @@ fn lighten(c: Color32, by: i16) -> Color32 {
 }
 
 
-pub fn window_frame(ctx: &egui::Context, show_minimize: bool, add: impl FnOnce(&mut Ui, &Palette)) {
+pub fn window_frame(
+    ctx: &egui::Context,
+    title: &str,
+    full_lights: bool,
+    add: impl FnOnce(&mut Ui, &Palette),
+) {
     let p = frame_palette(ctx);
     let frame = egui::Frame {
         fill: p.bg,
@@ -104,7 +115,7 @@ pub fn window_frame(ctx: &egui::Context, show_minimize: bool, add: impl FnOnce(&
     };
     egui::CentralPanel::default().frame(frame).show(ctx, |ui| {
         let full = ui.max_rect();
-        let bar_h = 36.0;
+        let bar_h = 48.0;
         let bar = egui::Rect::from_min_size(full.min, Vec2::new(full.width(), bar_h));
         let resp = ui.interact(bar, egui::Id::new("ll_titlebar"), Sense::click_and_drag());
         if resp.drag_started_by(egui::PointerButton::Primary) {
@@ -114,27 +125,40 @@ pub fn window_frame(ctx: &egui::Context, show_minimize: bool, add: impl FnOnce(&
             let m = ctx.input(|i| i.viewport().maximized.unwrap_or(false));
             ctx.send_viewport_cmd(egui::ViewportCommand::Maximized(!m));
         }
-        let bar_inner = egui::Rect::from_min_max(
-            egui::Pos2::new(bar.min.x + 12.0, bar.min.y),
-            egui::Pos2::new(bar.max.x - 12.0, bar.max.y),
+        if !title.is_empty() {
+            ui.painter().text(
+                bar.center(),
+                egui::Align2::CENTER_CENTER,
+                title,
+                egui::FontId::proportional(13.0),
+                p.text,
+            );
+        }
+        let lights = egui::Rect::from_min_max(
+            egui::Pos2::new(bar.min.x + 16.0, bar.min.y),
+            egui::Pos2::new(bar.min.x + 120.0, bar.max.y),
         );
-        let mut bar_ui = ui.new_child(
+        let mut lights_ui = ui.new_child(
             egui::UiBuilder::new()
-                .max_rect(bar_inner)
-                .layout(egui::Layout::right_to_left(egui::Align::Center)),
+                .max_rect(lights)
+                .layout(egui::Layout::left_to_right(egui::Align::Center)),
         );
-        if window_button(&mut bar_ui, &p, true).clicked() {
+        lights_ui.spacing_mut().item_spacing.x = 8.0;
+        if traffic_light(&mut lights_ui, Color32::from_rgb(0xFF, 0x5F, 0x57), Glyph::Close).clicked() {
             ctx.send_viewport_cmd(egui::ViewportCommand::Close);
         }
-        if show_minimize {
-            bar_ui.add_space(8.0);
-            if window_button(&mut bar_ui, &p, false).clicked() {
+        if full_lights {
+            if traffic_light(&mut lights_ui, Color32::from_rgb(0xFE, 0xBC, 0x2E), Glyph::Min).clicked() {
                 ctx.send_viewport_cmd(egui::ViewportCommand::Minimized(true));
+            }
+            if traffic_light(&mut lights_ui, Color32::from_rgb(0x28, 0xC8, 0x40), Glyph::Zoom).clicked() {
+                let m = ctx.input(|i| i.viewport().maximized.unwrap_or(false));
+                ctx.send_viewport_cmd(egui::ViewportCommand::Maximized(!m));
             }
         }
         let content = egui::Rect::from_min_max(
-            egui::Pos2::new(full.min.x + 20.0, full.min.y + bar_h),
-            egui::Pos2::new(full.max.x - 20.0, full.max.y - 20.0),
+            egui::Pos2::new(full.min.x, full.min.y + bar_h),
+            full.max,
         );
         let mut content_ui = ui.new_child(
             egui::UiBuilder::new()
@@ -145,38 +169,54 @@ pub fn window_frame(ctx: &egui::Context, show_minimize: bool, add: impl FnOnce(&
     });
 }
 
-fn window_button(ui: &mut Ui, p: &Palette, close: bool) -> Response {
-    let (rect, resp) = ui.allocate_exact_size(Vec2::splat(20.0), Sense::click());
+enum Glyph {
+    Close,
+    Min,
+    Zoom,
+}
+
+fn traffic_light(ui: &mut Ui, colour: Color32, glyph: Glyph) -> Response {
+    let (rect, resp) = ui.allocate_exact_size(Vec2::splat(14.0), Sense::click());
     if ui.is_rect_visible(rect) {
-        let hovered = resp.hovered();
         let c = rect.center();
-        let r = 6.5;
-        let fill = if hovered {
-            if close { p.warn } else { lighten(p.raised, if ui.visuals().dark_mode { 20 } else { -16 }) }
-        } else {
-            p.raised
-        };
         let painter = ui.painter();
-        painter.circle_filled(c, r, fill);
-        painter.circle_stroke(c, r, Stroke::new(1.0, p.outline));
-        if hovered {
-            let g = 2.6;
-            let colour = if close { Color32::WHITE } else { p.text };
-            let stroke = Stroke::new(1.6, colour);
-            if close {
-                painter.line_segment(
-                    [egui::Pos2::new(c.x - g, c.y - g), egui::Pos2::new(c.x + g, c.y + g)],
-                    stroke,
-                );
-                painter.line_segment(
-                    [egui::Pos2::new(c.x - g, c.y + g), egui::Pos2::new(c.x + g, c.y - g)],
-                    stroke,
-                );
-            } else {
-                painter.line_segment(
-                    [egui::Pos2::new(c.x - g, c.y), egui::Pos2::new(c.x + g, c.y)],
-                    stroke,
-                );
+        painter.circle_filled(c, 6.5, colour);
+        painter.circle_stroke(
+            c,
+            6.5,
+            Stroke::new(0.5, Color32::from_rgba_unmultiplied(0, 0, 0, 40)),
+        );
+        if resp.hovered() {
+            let ink = Color32::from_rgba_unmultiplied(0, 0, 0, 120);
+            let s = Stroke::new(1.4, ink);
+            let g = 2.4;
+            match glyph {
+                Glyph::Close => {
+                    painter.line_segment(
+                        [egui::Pos2::new(c.x - g, c.y - g), egui::Pos2::new(c.x + g, c.y + g)],
+                        s,
+                    );
+                    painter.line_segment(
+                        [egui::Pos2::new(c.x - g, c.y + g), egui::Pos2::new(c.x + g, c.y - g)],
+                        s,
+                    );
+                }
+                Glyph::Min => {
+                    painter.line_segment(
+                        [egui::Pos2::new(c.x - g, c.y), egui::Pos2::new(c.x + g, c.y)],
+                        s,
+                    );
+                }
+                Glyph::Zoom => {
+                    painter.line_segment(
+                        [egui::Pos2::new(c.x - g, c.y), egui::Pos2::new(c.x + g, c.y)],
+                        s,
+                    );
+                    painter.line_segment(
+                        [egui::Pos2::new(c.x, c.y - g), egui::Pos2::new(c.x, c.y + g)],
+                        s,
+                    );
+                }
             }
         }
     }
@@ -187,8 +227,8 @@ pub fn card<R>(ui: &mut Ui, p: &Palette, add: impl FnOnce(&mut Ui) -> R) -> R {
     let out = egui::Frame::none()
         .fill(p.card)
         .stroke(Stroke::new(1.0, p.outline))
-        .rounding(Radius::same(16.0))
-        .inner_margin(16.0)
+        .rounding(Radius::same(10.0))
+        .inner_margin(14.0)
         .show(ui, |ui| {
             ui.set_width(ui.available_width());
             add(ui)
@@ -211,11 +251,20 @@ pub fn primary_button(ui: &mut Ui, p: &Palette, text: &str) -> Response {
     let padded = format!("  {text}  ");
     ui.add(
         egui::Button::new(
-            egui::RichText::new(padded).size(14.0).strong().color(p.on_accent),
+            egui::RichText::new(padded).size(13.0).strong().color(p.on_accent),
         )
         .fill(p.accent)
-        .rounding(Radius::same(20.0))
-        .min_size(Vec2::new(0.0, 38.0)),
+        .rounding(Radius::same(8.0))
+        .min_size(Vec2::new(0.0, 32.0)),
+    )
+}
+
+pub fn bordered_button(ui: &mut Ui, p: &Palette, text: &str) -> Response {
+    ui.add(
+        egui::Button::new(egui::RichText::new(text).size(12.0).color(p.text))
+            .fill(Color32::TRANSPARENT)
+            .stroke(Stroke::new(1.0, p.outline))
+            .rounding(Radius::same(8.0)),
     )
 }
 
@@ -223,7 +272,7 @@ pub fn danger_button(ui: &mut Ui, p: &Palette, text: &str) -> Response {
     ui.add(
         egui::Button::new(egui::RichText::new(text).size(13.0).color(Color32::WHITE))
             .fill(p.warn)
-            .rounding(Radius::same(20.0)),
+            .rounding(Radius::same(8.0)),
     )
 }
 
@@ -231,7 +280,7 @@ pub fn quiet_button(ui: &mut Ui, p: &Palette, text: &str) -> Response {
     ui.add(
         egui::Button::new(egui::RichText::new(text).size(13.0).color(p.dim))
             .fill(Color32::TRANSPARENT)
-            .rounding(Radius::same(20.0)),
+            .rounding(Radius::same(8.0)),
     )
 }
 
@@ -246,7 +295,7 @@ pub fn status_dot(ui: &mut Ui, color: Color32, on: bool) {
 }
 
 pub fn toggle(ui: &mut Ui, p: &Palette, on: &mut bool) -> Response {
-    let size = Vec2::new(42.0, 24.0);
+    let size = Vec2::new(37.0, 22.0);
     let (rect, mut response) = ui.allocate_exact_size(size, Sense::click());
     if response.clicked() {
         *on = !*on;
@@ -259,12 +308,12 @@ pub fn toggle(ui: &mut Ui, p: &Palette, on: &mut bool) -> Response {
         let track = mix(p.raised, p.accent, t);
         let knob_colour = mix(Color32::WHITE, p.on_accent, t);
         let painter = ui.painter();
-        painter.rect_filled(rect, Radius::same(12.0), track);
-        painter.rect_stroke(rect, Radius::same(12.0), Stroke::new(1.0, p.outline));
-        let knob_x = egui::lerp((rect.left() + 12.0)..=(rect.right() - 12.0), t);
+        painter.rect_filled(rect, Radius::same(11.0), track);
+        painter.rect_stroke(rect, Radius::same(11.0), Stroke::new(1.0, p.outline));
+        let knob_x = egui::lerp((rect.left() + 11.0)..=(rect.right() - 11.0), t);
         let knob = egui::Pos2::new(knob_x, rect.center().y);
-        painter.circle_filled(knob, 9.0, knob_colour);
-        painter.circle_stroke(knob, 9.0, Stroke::new(1.0, p.outline));
+        painter.circle_filled(knob, 9.5, knob_colour);
+        painter.circle_stroke(knob, 9.5, Stroke::new(1.0, p.outline));
     }
     response
 }

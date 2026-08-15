@@ -166,7 +166,7 @@ impl eframe::App for PairApp {
         ctx.request_repaint_after(std::time::Duration::from_millis(250));
         let state = self.state.lock().unwrap().clone();
 
-        theme::window_frame(ctx, false, |ui, p| {
+        theme::window_frame(ctx, "", false, |ui, p| {
             {
                 ui.vertical_centered(|ui| {
                     if let Some(logo) = &self.logo {
@@ -178,9 +178,13 @@ impl eframe::App for PairApp {
                     }
                     ui.add_space(6.0);
                     ui.label(
-                        egui::RichText::new("Linux Link").size(24.0).strong().color(p.text),
+                        egui::RichText::new("Pair a device").size(15.0).strong().color(p.text),
                     );
-                    ui.label(egui::RichText::new("Pair a device").size(14.0).color(p.dim));
+                    ui.label(
+                        egui::RichText::new("Scan the code with the Linux Link app")
+                            .size(12.0)
+                            .color(p.dim),
+                    );
                     ui.add_space(18.0);
 
                     match &state {
@@ -193,12 +197,6 @@ impl eframe::App for PairApp {
                         PairState::Waiting { payload, since } => {
                             self.draw_qr(ui, payload);
                             ui.add_space(16.0);
-                            ui.label(
-                                egui::RichText::new("Scan this code with the Linux Link app")
-                                    .size(15.0)
-                                    .color(p.text),
-                            );
-                            ui.add_space(2.0);
                             ui.label(
                                 egui::RichText::new("On the phone: Pair your PC")
                                     .size(12.5)
@@ -218,7 +216,17 @@ impl eframe::App for PairApp {
                             painter.rect_filled(bar, Rounding::same(3.0), p.raised);
                             let mut fill = bar;
                             fill.set_width(width * frac);
-                            painter.rect_filled(fill, Rounding::same(3.0), p.accent);
+                            painter.rect_filled(fill, Rounding::same(3.0), p.text);
+                            ui.add_space(6.0);
+                            ui.label(
+                                egui::RichText::new("Code refreshes automatically")
+                                    .size(11.0)
+                                    .color(p.dim),
+                            );
+                            ui.add_space(10.0);
+                            if theme::bordered_button(ui, p, "Cancel").clicked() {
+                                ctx.send_viewport_cmd(egui::ViewportCommand::Close);
+                            }
                         }
                         PairState::Paired { name, at } => {
                             ui.add_space(50.0);
@@ -281,8 +289,8 @@ impl eframe::App for PairApp {
 fn main() -> eframe::Result {
     let options = eframe::NativeOptions {
         viewport: egui::ViewportBuilder::default()
-            .with_inner_size([470.0, 700.0])
-            .with_min_inner_size([440.0, 650.0])
+            .with_inner_size([400.0, 620.0])
+            .with_min_inner_size([380.0, 560.0])
             .with_resizable(false)
             .with_app_id("linux-link")
             .with_decorations(false)
