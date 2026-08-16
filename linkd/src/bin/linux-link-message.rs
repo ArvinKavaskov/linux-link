@@ -12,15 +12,15 @@ struct MessageApp {
 }
 
 impl eframe::App for MessageApp {
-    fn clear_color(&self, _visuals: &egui::Visuals) -> [f32; 4] {
-        egui::Rgba::TRANSPARENT.to_array()
+    fn clear_color(&self, visuals: &egui::Visuals) -> [f32; 4] {
+        theme::clear_color(visuals)
     }
 
     fn update(&mut self, ctx: &egui::Context, _frame: &mut eframe::Frame) {
         if ctx.input(|i| i.key_pressed(egui::Key::Escape)) {
             ctx.send_viewport_cmd(egui::ViewportCommand::Close);
         }
-        theme::window_frame(ctx, "", false, |ui, p| {
+        theme::window_frame(ctx, "", false, None, |ui, p| {
             {
                 ui.label(egui::RichText::new(&self.app).size(12.0).strong().color(p.dim));
                 if !self.title.is_empty() {

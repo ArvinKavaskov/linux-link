@@ -313,8 +313,8 @@ impl SettingsApp {
 }
 
 impl eframe::App for SettingsApp {
-    fn clear_color(&self, _visuals: &egui::Visuals) -> [f32; 4] {
-        egui::Rgba::TRANSPARENT.to_array()
+    fn clear_color(&self, visuals: &egui::Visuals) -> [f32; 4] {
+        theme::clear_color(visuals)
     }
 
     fn update(&mut self, ctx: &egui::Context, _frame: &mut eframe::Frame) {
@@ -323,24 +323,11 @@ impl eframe::App for SettingsApp {
         }
         ctx.request_repaint_after(REFRESH);
 
-        theme::window_frame(ctx, "Linux Link", true, |ui, p| {
+        theme::window_frame(ctx, "Linux Link", true, Some(196.0), |ui, p| {
             let full = ui.max_rect();
             let side = egui::Rect::from_min_max(
                 full.min,
                 egui::Pos2::new(full.min.x + 196.0, full.max.y),
-            );
-            ui.painter().rect_filled(
-                egui::Rect::from_min_max(
-                    egui::Pos2::new(side.min.x, side.min.y - 48.0),
-                    egui::Pos2::new(side.max.x, side.max.y),
-                ),
-                egui::Rounding {
-                    nw: 14.0,
-                    sw: 14.0,
-                    ne: 0.0,
-                    se: 0.0,
-                },
-                p.side,
             );
             let mut side_ui = ui.new_child(
                 egui::UiBuilder::new()

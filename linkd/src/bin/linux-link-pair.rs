@@ -158,15 +158,15 @@ impl PairApp {
 }
 
 impl eframe::App for PairApp {
-    fn clear_color(&self, _visuals: &egui::Visuals) -> [f32; 4] {
-        egui::Rgba::TRANSPARENT.to_array()
+    fn clear_color(&self, visuals: &egui::Visuals) -> [f32; 4] {
+        theme::clear_color(visuals)
     }
 
     fn update(&mut self, ctx: &egui::Context, _frame: &mut eframe::Frame) {
         ctx.request_repaint_after(std::time::Duration::from_millis(250));
         let state = self.state.lock().unwrap().clone();
 
-        theme::window_frame(ctx, "", false, |ui, p| {
+        theme::window_frame(ctx, "", false, None, |ui, p| {
             {
                 ui.vertical_centered(|ui| {
                     if let Some(logo) = &self.logo {

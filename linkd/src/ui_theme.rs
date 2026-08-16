@@ -100,10 +100,17 @@ fn lighten(c: Color32, by: i16) -> Color32 {
 }
 
 
+pub fn clear_color(visuals: &egui::Visuals) -> [f32; 4] {
+    let p = palette(visuals.dark_mode);
+    let c = egui::Rgba::from(p.bg);
+    [c.r(), c.g(), c.b(), 0.0]
+}
+
 pub fn window_frame(
     ctx: &egui::Context,
     title: &str,
     full_lights: bool,
+    side_width: Option<f32>,
     add: impl FnOnce(&mut Ui, &Palette),
 ) {
     let p = frame_palette(ctx);
@@ -117,6 +124,18 @@ pub fn window_frame(
         let full = ui.max_rect();
         let bar_h = 48.0;
         let bar = egui::Rect::from_min_size(full.min, Vec2::new(full.width(), bar_h));
+        if let Some(w) = side_width {
+            ui.painter().rect_filled(
+                egui::Rect::from_min_max(full.min, egui::Pos2::new(full.min.x + w, full.max.y)),
+                Radius {
+                    nw: 14.0,
+                    sw: 14.0,
+                    ne: 0.0,
+                    se: 0.0,
+                },
+                p.side,
+            );
+        }
         let resp = ui.interact(bar, egui::Id::new("ll_titlebar"), Sense::click_and_drag());
         if resp.drag_started_by(egui::PointerButton::Primary) {
             ctx.send_viewport_cmd(egui::ViewportCommand::StartDrag);
