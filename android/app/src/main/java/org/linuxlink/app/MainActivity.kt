@@ -384,7 +384,7 @@ class MainActivity : ComponentActivity() {
                 SectionCard("Sound and camera") {
                     SwitchRow(
                         "Phone audio on PC",
-                        "Voice messages and media from this phone play on the PC",
+                        "Media plays on the PC — some apps (WhatsApp) forbid capture",
                         PhonePlaybackService.running,
                     ) { togglePhoneAudio() }
                     SwitchRow(

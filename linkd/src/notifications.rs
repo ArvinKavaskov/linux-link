@@ -15,6 +15,15 @@ pub struct Notifier {
     hub: Arc<ClipboardHub>,
 }
 
+pub struct Incoming<'a> {
+    pub app: &'a str,
+    pub title: &'a str,
+    pub body: &'a str,
+    pub body_full: &'a str,
+    pub can_reply: bool,
+    pub is_message: bool,
+}
+
 impl Notifier {
     pub async fn new(hub: Arc<ClipboardHub>) -> Arc<Self> {
         let conn = match zbus::Connection::session().await {
@@ -39,20 +48,19 @@ impl Notifier {
         notifier
     }
 
-    pub async fn show(
-        &self,
-        key: &str,
-        app: &str,
-        title: &str,
-        body: &str,
-        body_full: &str,
-        can_reply: bool,
-    ) {
+    pub async fn show(&self, key: &str, n: &Incoming<'_>) {
+        let (app, title, body, body_full, can_reply, is_message) =
+            (n.app, n.title, n.body, n.body_full, n.can_reply, n.is_message);
         let Some(conn) = &self.conn else { return };
         let replaces_id = { self.ids.lock().await.get(key).copied().unwrap_or(0) };
 
         let summary = if title.is_empty() { app.to_string() } else { format!("{app} — {title}") };
-        let mut actions: Vec<&str> = vec!["default", "Show", "view", "Show"];
+        let clickable = is_message || can_reply;
+        let mut actions: Vec<&str> = if clickable {
+            vec!["default", "Show", "view", "Show"]
+        } else {
+            vec![]
+        };
         if can_reply {
             actions.extend(["reply", "Reply"]);
         }
@@ -80,11 +88,13 @@ impl Notifier {
             Ok(reply) => match reply.body().deserialize::<u32>() {
                 Ok(id) => {
                     self.ids.lock().await.insert(key.to_string(), id);
-                    let full = if body_full.trim().is_empty() { body } else { body_full };
-                    self.view_targets.lock().await.insert(
-                        id,
-                        (app.to_string(), title.to_string(), full.to_string()),
-                    );
+                    if clickable {
+                        let full = if body_full.trim().is_empty() { body } else { body_full };
+                        self.view_targets.lock().await.insert(
+                            id,
+                            (app.to_string(), title.to_string(), full.to_string()),
+                        );
+                    }
                     if can_reply {
                         self.reply_targets
                             .lock()

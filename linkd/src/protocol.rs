@@ -27,6 +27,8 @@ pub enum Message {
         body_full: String,
         #[serde(default)]
         can_reply: bool,
+        #[serde(default)]
+        is_message: bool,
     },
     NotificationDismissed { key: String },
     Clipboard { text: String },

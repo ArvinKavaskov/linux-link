@@ -40,6 +40,7 @@ class NotificationRelayService : NotificationListenerService() {
             put("body", body)
             put("body_full", bodyFull)
             put("can_reply", replyAction != null)
+            put("is_message", isMessage(sbn, extras, replyAction != null))
         })
         Log.d(TAG, "→ ${sbn.packageName} : $title (reply=${replyAction != null})")
     }
@@ -53,6 +54,13 @@ class NotificationRelayService : NotificationListenerService() {
         })
     }
 
+
+
+    private fun isMessage(sbn: StatusBarNotification, extras: Bundle, canReply: Boolean): Boolean {
+        if (canReply) return true
+        if (sbn.notification.category == Notification.CATEGORY_MESSAGE) return true
+        return extras.getParcelableArray(Notification.EXTRA_MESSAGES) != null
+    }
 
     private fun fullText(extras: Bundle, fallback: String): String {
         extras.getParcelableArray(Notification.EXTRA_MESSAGES)?.let { arr ->

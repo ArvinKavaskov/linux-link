@@ -199,9 +199,21 @@ async fn handle_stream(
                 Message::HelloOk { device_name: identity.device_name.clone() }
             }
             Message::Ping { seq, sent_at_ms } if trusted => Message::Pong { seq, sent_at_ms },
-            Message::Notification { key, app, title, body, body_full, can_reply } if trusted => {
+            Message::Notification { key, app, title, body, body_full, can_reply, is_message } if trusted => {
                 tracing::info!("🔔 {app}: {title}{}", if can_reply { " (replyable)" } else { "" });
-                notifier.show(&key, &app, &title, &body, &body_full, can_reply).await;
+                notifier
+                    .show(
+                        &key,
+                        &crate::notifications::Incoming {
+                            app: &app,
+                            title: &title,
+                            body: &body,
+                            body_full: &body_full,
+                            can_reply,
+                            is_message,
+                        },
+                    )
+                    .await;
                 Message::Ok
             }
             Message::NotificationDismissed { key } if trusted => {

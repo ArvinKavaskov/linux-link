@@ -138,6 +138,7 @@ The core is solid on my machines (Zorin PC, Honor phone): pairing, auto-reconnec
 <details>
 <summary><b>Version history</b></summary>
 
+- **v5.3** — clicks reserved for words. Only message notifications open the full-text window now: the phone flags what is actually a conversation (messaging style, message category, or a reply field) and the PC adds the click and the Show button for those alone — a download-finished toast stays a toast. The audio switch stops overpromising: WhatsApp forbids playback capture at the OS level, the row says so, and the README documents the Bluetooth-speaker route that carries every app regardless.
 - **v5.2.1** — the traffic lights come out from behind the sidebar (paint order: chrome last), and window corners stop flashing white on GPUs that ignore surface transparency — the clear colour now falls back to the window background, so rounded corners degrade to square instead of to white.
 - **v5.2** — the design handoff lands. The settings window becomes a System Settings-style panel: 720×560, traffic-light window controls, a real sidebar with Devices, General, Shortcuts and About panes, grouped cards with indented row separators and per-device battery. The pairing window becomes a 400px sheet with a bordered Cancel and a self-refreshing code note. Every token — both palettes, radii, the 37×22 switch, the 8px buttons — now comes verbatim from the design spec, on the PC and the phone alike.
 - **v5.1.2** — window buttons that speak with the cursor. The close and minimise controls become small quiet circles whose glyphs are drawn, not typed — a stroked cross and dash that appear on hover, close blushing red only under the pointer. The settings header now reads its connection state from the same device list as the rows below it, so the two can never disagree again.
@@ -177,3 +178,17 @@ QUIC with ALPN `linuxlink/1`, mutual TLS 1.3, self-signed certificates pinned by
 ## License
 
 GPL-3.0 — see [LICENSE](LICENSE).
+
+### Hearing WhatsApp voice notes on the PC
+
+Some apps — WhatsApp first among them — set `allowAudioPlaybackCapture=false`,
+and Android enforces that choice below anything a third-party app can do:
+"Phone audio on PC" will carry Telegram, music and video players, but WhatsApp
+plays silence by WhatsApp's own decision.
+
+The route that works for every app, WhatsApp included, is Bluetooth: pair the
+phone to the PC as if the PC were a Bluetooth speaker. On a PipeWire desktop
+this needs no extra software — pair the two in the system Bluetooth settings,
+pick the PC as the audio output on the phone, and everything the phone plays
+comes out of the PC, because Bluetooth routing happens beneath per-app capture
+rules.
