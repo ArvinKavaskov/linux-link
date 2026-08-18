@@ -10,22 +10,36 @@ pub struct BatteryState {
 
 pub struct BatteryStore {
     last: Mutex<Option<BatteryState>>,
+    by_device: Mutex<std::collections::HashMap<String, BatteryState>>,
 }
 
 impl BatteryStore {
     pub fn new() -> std::sync::Arc<Self> {
-        std::sync::Arc::new(Self { last: Mutex::new(load()) })
+        std::sync::Arc::new(Self {
+            last: Mutex::new(load()),
+            by_device: Mutex::new(std::collections::HashMap::new()),
+        })
     }
 
-    pub fn update(&self, level: i32, charging: bool) {
+    pub fn update(&self, fingerprint: &str, level: i32, charging: bool) {
         let state = BatteryState { level, charging };
         *self.last.lock().unwrap() = Some(state);
+        if !fingerprint.is_empty() {
+            self.by_device
+                .lock()
+                .unwrap()
+                .insert(fingerprint.to_string(), state);
+        }
         save(&state);
         crate::events::poke();
     }
 
     pub fn snapshot(&self) -> Option<BatteryState> {
         *self.last.lock().unwrap()
+    }
+
+    pub fn of(&self, fingerprint: &str) -> Option<BatteryState> {
+        self.by_device.lock().unwrap().get(fingerprint).copied()
     }
 }
 

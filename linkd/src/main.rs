@@ -1,4 +1,5 @@
 mod battery;
+mod doctor;
 mod ble;
 mod clipboard;
 mod clipwatch;
@@ -78,6 +79,7 @@ enum Command {
     },
     ProximityLock { state: String },
     Battery,
+    Doctor,
     Forget { fingerprint: String },
     Shortcuts { action: Option<String> },
 }
@@ -117,7 +119,11 @@ async fn main() -> Result<()> {
             println!("Proximity lock: {}", if on { "enabled" } else { "disabled" });
             Ok(())
         }
-        Command::Battery => {
+        Command::Doctor => {
+            doctor::run();
+            Ok(())
+        }
+        Command::Battery => { 
             battery::print_last();
             Ok(())
         }

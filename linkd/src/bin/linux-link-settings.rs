@@ -40,16 +40,20 @@ struct DeviceStatus {
     name: String,
     #[serde(default)]
     fingerprint: String,
+    #[serde(default = "unknown_battery")]
+    battery: i32,
+    #[serde(default)]
+    charging: bool,
+}
+
+fn unknown_battery() -> i32 {
+    -1
 }
 
 #[derive(Deserialize, Default, Clone)]
 struct Status {
     #[serde(default)]
     devices: Vec<DeviceStatus>,
-    #[serde(default)]
-    battery: i32,
-    #[serde(default)]
-    charging: bool,
     #[serde(default)]
     proximity: bool,
 }
@@ -119,6 +123,25 @@ fn forget_device(fingerprint: &str) -> Result<String, String> {
     Ok(removed.name)
 }
 
+
+
+fn row_status_line(online: bool, peer: &Peer, devices: &[DeviceStatus]) -> String {
+    if !online {
+        return "Not connected".to_string();
+    }
+    let short = &peer.fingerprint[..peer.fingerprint.len().min(16)];
+    let mine = devices
+        .iter()
+        .find(|d| d.fingerprint.starts_with(short) || d.name == peer.name);
+    match mine {
+        Some(d) if d.battery >= 0 => format!(
+            "Connected · {}%{}",
+            d.battery,
+            if d.charging { " ⚡" } else { "" }
+        ),
+        _ => "Connected".to_string(),
+    }
+}
 
 fn draw_tab_icon(painter: &egui::Painter, rect: egui::Rect, tab: Tab, colour: egui::Color32) {
     let c = rect.center();
@@ -481,6 +504,7 @@ impl SettingsApp {
             .iter()
             .map(|d| d.fingerprint.clone())
             .collect();
+        let devices = self.world.status.devices.clone();
         let connected_names: Vec<String> =
             self.world.status.devices.iter().map(|d| d.name.clone()).collect();
         let confirming = self.confirm_forget.clone();
@@ -509,19 +533,7 @@ impl SettingsApp {
                     ui.vertical(|ui| {
                         ui.label(egui::RichText::new(&peer.name).size(14.0).color(p.text));
                         ui.label(
-                            egui::RichText::new(if online {
-                                if self.world.status.battery >= 0 {
-                                    format!(
-                                        "Connected · {}%{}",
-                                        self.world.status.battery,
-                                        if self.world.status.charging { " ⚡" } else { "" }
-                                    )
-                                } else {
-                                    "Connected".to_string()
-                                }
-                            } else {
-                                "Not connected".to_string()
-                            })
+                            egui::RichText::new(row_status_line(online, peer, &devices))
                                 .size(11.5)
                                 .color(p.dim),
                         );

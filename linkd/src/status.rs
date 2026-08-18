@@ -12,6 +12,8 @@ pub struct DeviceStatus {
     pub name: String,
     pub fingerprint: String,
     pub connected: bool,
+    pub battery: i32,
+    pub charging: bool,
 }
 
 #[derive(Serialize)]
@@ -53,10 +55,15 @@ pub fn spawn(
             let peers = TrustedPeers::load().map(|t| t.peers).unwrap_or_default();
             let devices: Vec<DeviceStatus> = peers
                 .iter()
-                .map(|p| DeviceStatus {
-                    name: p.name.clone(),
-                    fingerprint: p.fingerprint.clone(),
-                    connected: connected_fps.contains(&p.fingerprint),
+                .map(|p| {
+                    let b = battery.of(&p.fingerprint);
+                    DeviceStatus {
+                        name: p.name.clone(),
+                        fingerprint: p.fingerprint.clone(),
+                        connected: connected_fps.contains(&p.fingerprint),
+                        battery: b.map(|s| s.level).unwrap_or(-1),
+                        charging: b.map(|s| s.charging).unwrap_or(false),
+                    }
                 })
                 .collect();
             let device_count = connected_fps.len();

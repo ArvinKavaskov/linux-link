@@ -232,7 +232,7 @@ async fn handle_stream(
             }
             Message::Battery { level, charging } if trusted => {
                 tracing::debug!("🔋 Phone battery: {level}%{}", if charging { " (charging)" } else { "" });
-                battery.update(level, charging);
+                battery.update(peer_fp.unwrap_or(""), level, charging);
                 Message::Ok
             }
             Message::Dnd { on } if trusted => {
